@@ -1,0 +1,2 @@
+RAR support requires WinRAR/RAR.exe to be installed separately.
+7zip support requires 7zip.exe to be installed separately.

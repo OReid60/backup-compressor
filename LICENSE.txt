@@ -1,0 +1,1 @@
+This software is provided as-is. The user is responsible for verifying backups. The developer is not liable for data loss, missed schedules, corruption, or system issues.
