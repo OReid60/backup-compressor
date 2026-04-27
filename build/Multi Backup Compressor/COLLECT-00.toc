@@ -2800,6 +2800,7 @@
   ('_tkinter.pyd', 'C:\\Python314\\DLLs\\_tkinter.pyd', 'EXTENSION'),
   ('_wmi.pyd', 'C:\\Python314\\DLLs\\_wmi.pyd', 'EXTENSION'),
   ('_zstd.pyd', 'C:\\Python314\\DLLs\\_zstd.pyd', 'EXTENSION'),
+  ('app_icon.ico', 'C:\\Users\\Admin\\backup-compressor\\app_icon.ico', 'DATA'),
   ('base_library.zip',
    'C:\\Users\\Admin\\backup-compressor\\build\\Multi Backup '
    'Compressor\\base_library.zip',

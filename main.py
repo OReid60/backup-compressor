@@ -14,10 +14,7 @@ from datetime import datetime
 from tkinter import *
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-from PIL import Image
 
-img = Image.open("app_icon.ico")
-img.save("app_icon.ico", sizes=[(256,256)])
 
 
 main_buttons = []
@@ -25,11 +22,27 @@ selected_items = []
 scheduled_backup_times = []
 scheduler_running = False
 last_run_time = None
-settings_file = "app_settings.json"
+#settings_file = "app_settings.json"
 active_profile_path = None
 backup_running = False
 tray_icon = None
 app_should_exit = False
+
+
+app_data_folder = os.path.join(os.getenv("APPDATA"), "Multi Backup Compressor")
+os.makedirs(app_data_folder, exist_ok=True)
+
+settings_file = os.path.join(app_data_folder, "app_settings.json")
+
+
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 def add_files():
     files = filedialog.askopenfilenames()
@@ -707,7 +720,7 @@ def disable_run_on_startup():
 
 
 root = Tk()
-root.iconbitmap("app_icon.ico")
+root.iconbitmap(resource_path("app_icon.ico"))
 icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
 icon_teal = create_status_icon("#1abc9c")  # idle
