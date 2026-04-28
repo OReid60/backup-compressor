@@ -29,9 +29,8 @@ tray_icon = None
 app_should_exit = False
 
 
-APP_NAME = "Multi Backup Compressor"
-APP_VERSION = "1.0.4"
-
+APP_NAME = "Backup Compressor"
+APP_VERSION = "1.2.6"
 
 app_data_folder = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
 os.makedirs(app_data_folder, exist_ok=True)
@@ -307,7 +306,7 @@ def start_backup(show_messages=True):
         if tray_icon:
             tray_icon.notify(
                 f"Backup completed: {os.path.basename(output)}",
-                 "Multi Backup Compressor"
+                 "Backup Compressor"
             )
 
         if show_messages:
@@ -642,6 +641,22 @@ def start_scheduler():
     status_label.config(image=icon_green)
 
     write_scheduler_status("Scheduler started")
+
+def create_tray_image(color="#1abc9c"):
+    size = 64
+    padding = 2
+
+    image = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+
+    draw.ellipse(
+        (padding, padding, size - padding, size - padding),
+        fill=color,
+        outline="#0f3f3f",
+        width=2
+    )
+
+    return image
     
 
 def stop_scheduler():
@@ -668,6 +683,7 @@ def create_status_icon(color, size=14):
 def show_window(icon=None, item=None):
     root.after(0, root.deiconify)
     root.after(0, root.lift)
+    root.after(0, root.focus_force)
 
 def hide_window():
     root.withdraw()
@@ -688,22 +704,22 @@ def setup_tray_icon():
     global tray_icon
 
     tray_icon = pystray.Icon(
-        "Multi Backup Compressor",
+        "Backup Compressor",
         create_tray_image("#e74c3c"),
-        "Multi Backup Compressor",
+        "Backup Compressor",
         menu=pystray.Menu(
-            pystray.MenuItem("Open", show_window),
+            pystray.MenuItem("Open", show_window, default=True),  # 👈 KEY
             pystray.MenuItem("Start Scheduler", lambda icon, item: root.after(0, start_scheduler)),
             pystray.MenuItem("Stop Scheduler", lambda icon, item: root.after(0, stop_scheduler)),
             pystray.MenuItem("Exit", quit_app)
-        )
     )
+)
 
     threading.Thread(target=tray_icon.run, daemon=True).start()
 
 def get_startup_shortcut_path():
     startup_folder = winshell.startup()
-    return os.path.join(startup_folder, "Multi Backup Compressor.lnk")
+    return os.path.join(startup_folder, "Backup Compressor.lnk")
 
 def enable_run_on_startup():
     shortcut_path = get_startup_shortcut_path()
@@ -714,7 +730,7 @@ def enable_run_on_startup():
     with winshell.shortcut(shortcut_path) as shortcut:
         shortcut.path = python_exe
         shortcut.arguments = f'"{script_path}"'
-        shortcut.description = "Start Multi Backup Compressor with Windows"
+        shortcut.description = "Start Backup Compressor with Windows"
 
     messagebox.showinfo("Startup Enabled", "App will run when Windows starts.")
 
@@ -734,7 +750,7 @@ icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
 icon_teal = create_status_icon("#1abc9c")  # idle
 
-root.title("Multi Backup Compressor")
+root.title("Backup Compressor")
 
 width = 1000
 height = 800
@@ -773,7 +789,7 @@ settings_tab = ttk.Frame(notebook, padding=20)
 
 notebook.add(backup_tab, text="Backup")
 notebook.add(scheduler_tab, text="Scheduler")
-notebook.add(logs_tab, text="Logs")
+# notebook.add(logs_tab, text="Logs")
 logs_card = ttk.Frame(logs_tab, style="Card.TFrame", padding=15)
 logs_card.pack(fill=BOTH, expand=True)
 
