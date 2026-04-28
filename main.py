@@ -1,5 +1,5 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.0.2"
+APP_VERSION = "2.0.3"
 BG = "#313338"
 CARD = "#2b2d31"
 CARD_DARK = "#1e1f22"
