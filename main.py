@@ -29,11 +29,19 @@ tray_icon = None
 app_should_exit = False
 
 
-app_data_folder = os.path.join(os.getenv("APPDATA"), "Multi Backup Compressor")
+APP_NAME = "Multi Backup Compressor"
+APP_VERSION = "1.0.4"
+
+
+app_data_folder = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
 os.makedirs(app_data_folder, exist_ok=True)
 
 settings_file = os.path.join(app_data_folder, "app_settings.json")
 
+logs_folder = os.path.join(app_data_folder, "logs")
+os.makedirs(logs_folder, exist_ok=True)
+
+backup_log_file = os.path.join(logs_folder, "backup_log.txt")
 
 
 def resource_path(relative_path):
@@ -96,7 +104,7 @@ def create_zip(output_path):
                 zipf.write(item, os.path.basename(item))
                 processed += 1
                 set_progress((processed / total_files) * 100, f"Backing up: {os.path.basename(item)}")
-
+            
             elif os.path.isdir(item):
                 for root_dir, dirs, files in os.walk(item):
                     for file in files:
@@ -108,6 +116,8 @@ def create_zip(output_path):
                         set_progress((processed / total_files) * 100, f"Backing up: {file}")
 
     set_progress(100, "ZIP backup complete.")
+    if total_files == 0:
+        raise ValueError("No files found to back up.")
 
 def create_7z(output_path):
     progress_bar.config(mode="indeterminate")
@@ -294,6 +304,11 @@ def start_backup(show_messages=True):
         save_app_settings()
 
         set_progress(100, f"Backup complete: {os.path.basename(output)}")
+        if tray_icon:
+            tray_icon.notify(
+                f"Backup completed: {os.path.basename(output)}",
+                 "Multi Backup Compressor"
+            )
 
         if show_messages:
             open_after = messagebox.askyesno(
@@ -313,19 +328,23 @@ def start_backup(show_messages=True):
             write_scheduler_status(f"Scheduled backup failed: {e}")
 
         return False
-
+    
     finally:
         set_ui_busy(False)
         if scheduler_running:
             scheduler_status_var.set("Idle")
-        status_label.config(image=icon_teal)
+            status_label.config(image=icon_teal)
+            update_tray_icon("#1abc9c")
+        else:
+            status_label.config(image=icon_red)
+            update_tray_icon("#e74c3c")    
 
 def clear_list():
     selected_items.clear()
     update_list()
 
 def write_backup_log(destination, output_file, format_choice):
-    log_path = os.path.join(destination, "backup_log.txt")
+    log_path = backup_log_file
 
     with open(log_path, "a", encoding="utf-8") as log:
         log.write("====================================\n")
@@ -397,13 +416,7 @@ def load_profile():
     messagebox.showinfo("Profile Loaded", "Backup profile loaded successfully.")
 
 def view_backup_log():
-    destination = destination_var.get()
-
-    if not destination:
-        messagebox.showwarning("No Destination", "Select a destination first.")
-        return
-
-    log_path = os.path.join(destination, "backup_log.txt")
+    log_path = backup_log_file
 
     if not os.path.exists(log_path):
         messagebox.showinfo("No Logs", "No backup log found yet.")
@@ -537,20 +550,14 @@ def run_backup_silent():
     start_backup(show_messages=False)
 
 def write_scheduler_status(message):
-    destination = destination_var.get()
-
-    if not destination:
-        return
-
-    if not os.path.exists(destination):
-        os.makedirs(destination)
-
-    log_path = os.path.join(destination, "backup_log.txt")
-
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write(f"[Scheduler] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+    with open(backup_log_file, "a", encoding="utf-8") as log:
+        log.write(f"[Scheduler] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - v{APP_VERSION} - {message}\n")
 
 def check_scheduled_backups():
+    scheduler_status_var.set("Running Backup")
+    status_label.config(image=icon_green)
+    update_tray_icon("#2ecc71")  # green backing up
+    
     global last_run_time
 
     if scheduler_running:
@@ -618,7 +625,12 @@ def remove_selected_time():
 
     write_scheduler_status(f"Backup time removed: {time_value}")
 
+def update_tray_icon(color):
+    if tray_icon:
+        tray_icon.icon = create_tray_image(color)
+
 def start_scheduler():
+    update_tray_icon("#1abc9c")  # teal idle
     global scheduler_running
 
     if not scheduled_backup_times:
@@ -630,8 +642,10 @@ def start_scheduler():
     status_label.config(image=icon_green)
 
     write_scheduler_status("Scheduler started")
+    
 
 def stop_scheduler():
+    update_tray_icon("#e74c3c")  # red stopped
     global scheduler_running
 
     scheduler_running = False
@@ -676,11 +690,12 @@ def quit_app(icon=None, item=None):
     root.after(0, root.destroy)
 
 def setup_tray_icon():
+    
     global tray_icon
 
     tray_icon = pystray.Icon(
         "Multi Backup Compressor",
-        create_tray_image(),
+        create_tray_image("#e74c3c"),
         "Multi Backup Compressor",
         menu=pystray.Menu(
             pystray.MenuItem("Open", show_window),

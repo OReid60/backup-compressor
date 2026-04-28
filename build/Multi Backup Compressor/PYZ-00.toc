@@ -1,5 +1,5 @@
-('C:\\Users\\Admin\\backup-compressor\\build\\Multi Backup '
- 'Compressor\\PYZ-00.pyz',
+('C:\\Users\\Admin\\Documents\\Projects\\backup-compressor\\build\\Multi '
+ 'Backup Compressor\\PYZ-00.pyz',
  [('Cryptodome',
    'C:\\Users\\Admin\\AppData\\Roaming\\Python\\Python314\\site-packages\\Cryptodome\\__init__.py',
    'PYMODULE'),
