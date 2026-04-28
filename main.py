@@ -665,12 +665,6 @@ def create_status_icon(color, size=14):
 
     return img
 
-def create_tray_image(color="#1abc9c"):
-    image = PILImage.new("RGB", (64, 64), color="#1e1e1e")
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((12, 12, 52, 52), fill=color)
-    return image
-
 def show_window(icon=None, item=None):
     root.after(0, root.deiconify)
     root.after(0, root.lift)
