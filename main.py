@@ -1,3 +1,9 @@
+APP_NAME = "Backup Compressor"
+APP_VERSION = "1.2.6"
+
+# =========================================================
+# 📦 IMPORTS
+# =========================================================
 import os
 import zipfile
 import subprocess
@@ -7,16 +13,14 @@ import sys
 import py7zr
 import pystray
 import winshell
-from PIL import Image as PILImage, ImageDraw
-
-
+from PIL import Image as PILImage, ImageDraw    
 from datetime import datetime
 from tkinter import *
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-
-
-
+# =========================================================
+# ⚙️ APP CONFIG / GLOBAL VARIABLES
+# =========================================================
 main_buttons = []
 selected_items = []
 scheduled_backup_times = []
@@ -26,11 +30,7 @@ last_run_time = None
 active_profile_path = None
 backup_running = False
 tray_icon = None
-app_should_exit = False
-
-
-APP_NAME = "Backup Compressor"
-APP_VERSION = "1.2.6"
+app_should_exit = False 
 
 app_data_folder = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
 os.makedirs(app_data_folder, exist_ok=True)
@@ -42,6 +42,9 @@ os.makedirs(logs_folder, exist_ok=True)
 
 backup_log_file = os.path.join(logs_folder, "backup_log.txt")
 
+# =========================================================
+# 📁 FILE SELECTION & LIST MANAGEMENT
+# =========================================================
 
 def resource_path(relative_path):
     try:
@@ -96,6 +99,8 @@ def add_to_zip(zipf, item):
 def create_zip(output_path):
     total_files = count_backup_files()
     processed = 0
+    if total_files == 0:
+           raise ValueError("No files found to back up.")
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for item in selected_items:
@@ -114,9 +119,9 @@ def create_zip(output_path):
                         processed += 1
                         set_progress((processed / total_files) * 100, f"Backing up: {file}")
 
+
     set_progress(100, "ZIP backup complete.")
-    if total_files == 0:
-        raise ValueError("No files found to back up.")
+    
 
 def create_7z(output_path):
     progress_bar.config(mode="indeterminate")
@@ -552,14 +557,18 @@ def write_scheduler_status(message):
     with open(backup_log_file, "a", encoding="utf-8") as log:
         log.write(f"[Scheduler] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - v{APP_VERSION} - {message}\n")
 
-def check_scheduled_backups():
-    scheduler_status_var.set("Running Backup")
-    status_label.config(image=icon_green)
-    update_tray_icon("#2ecc71")  # green backing up
-    
-    global last_run_time
-
+def check_scheduled_backups():  
+    global last_run_time    
     if scheduler_running:
+        today = datetime.now().strftime("%a")
+
+        if not selected_days[today].get():
+            scheduler_status_var.set("Idle")
+            status_label.config(image=icon_teal)
+            update_tray_icon("#1abc9c")
+            root.after(60000, check_scheduled_backups)
+            return
+
         current_time = datetime.now().strftime("%H:%M")
 
         if current_time in scheduled_backup_times and current_time != last_run_time:
@@ -567,7 +576,7 @@ def check_scheduled_backups():
 
             scheduler_status_var.set("Running Backup")
             status_label.config(image=icon_green)
-
+            update_tray_icon("#2ecc71")
             write_scheduler_status(f"Scheduled backup started at {current_time}")
 
             backup_thread = threading.Thread(target=run_backup_silent)
@@ -575,10 +584,10 @@ def check_scheduled_backups():
             backup_thread.start()
 
         else:
-            # Only set idle if NOT already running backup
-            if scheduler_status_var.get() != "Running Backup":
-                scheduler_status_var.set("Idle")
-                status_label.config(image=icon_teal)
+                if scheduler_status_var.get() != "Running Backup":
+                    scheduler_status_var.set("Idle")
+                    status_label.config(image=icon_teal)
+                    update_tray_icon("#1abc9c")
 
     root.after(60000, check_scheduled_backups)
 
@@ -588,7 +597,7 @@ def update_schedule_list():
         schedule_listbox.insert(END, backup_time)
 
 def add_backup_time():
-    backup_time = schedule_time_var.get().strip()
+    backup_time = f"{hours_var.get()}:{minutes_var.get()}"
 
     if not backup_time:
         messagebox.showwarning("Missing Time", "Enter a backup time like 14:30.")
@@ -606,6 +615,7 @@ def add_backup_time():
         write_scheduler_status(f"Backup time added: {backup_time}")
 
     schedule_time_var.set("")
+    
 
 def remove_selected_time():
     selected = schedule_listbox.curselection()
@@ -742,9 +752,25 @@ def disable_run_on_startup():
 
     messagebox.showinfo("Startup Disabled", "App will no longer run when Windows starts.")
 
+def add_preset_time(time_str):
+    if time_str not in scheduled_backup_times:
+        scheduled_backup_times.append(time_str)
+        update_schedule_list()
+
 
 
 root = Tk()
+
+selected_days = {
+    "Mon": BooleanVar(value=True),
+    "Tue": BooleanVar(value=True),
+    "Wed": BooleanVar(value=True),
+    "Thu": BooleanVar(value=True),
+    "Fri": BooleanVar(value=True),
+    "Sat": BooleanVar(value=True),
+    "Sun": BooleanVar(value=True),
+}
+
 root.iconbitmap(resource_path("app_icon.ico"))
 icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
@@ -950,18 +976,45 @@ ttk.Label(
 ).grid(row=0, column=0, sticky="w", columnspan=4, pady=(0, 10))
 
 ttk.Label(scheduler_card, text="Backup Time:", background="#2d2d2d", foreground="#ffffff").grid(row=1, column=0, sticky="w", padx=(0, 8))
-ttk.Entry(scheduler_card, textvariable=schedule_time_var, width=12).grid(row=1, column=1, sticky="w", padx=(0, 8))
+
+hours_var = StringVar(value="12")
+minutes_var = StringVar(value="00")
+
+hours_dropdown = ttk.Combobox(
+    scheduler_card,
+    textvariable=hours_var,
+    values=[f"{i:02d}" for i in range(24)],
+    width=5,
+    state="readonly"
+)
+hours_dropdown.grid(row=1, column=1, padx=(0, 5))
+
+minutes_dropdown = ttk.Combobox(
+    scheduler_card,
+    textvariable=minutes_var,
+    values=[f"{i:02d}" for i in range(60)],
+    width=5,
+    state="readonly"
+)
+minutes_dropdown.grid(row=1, column=2, padx=(0, 10))
+
+ttk.Button(scheduler_card, text="Morning (09:00)", 
+    command=lambda: add_preset_time("09:00")).grid(row=2, column=0)
+
+ttk.Button(scheduler_card, text="Evening (18:00)", 
+    command=lambda: add_preset_time("18:00")).grid(row=2, column=1)
+
 btn_add_time = ttk.Button(scheduler_card, text="Add Time", command=add_backup_time)
-btn_add_time.grid(row=1, column=2, padx=(0, 8))
+btn_add_time.grid(row=1, column=3, padx=(0, 8))
 btn_remove_time = ttk.Button(scheduler_card, text="Remove Selected", command=remove_selected_time)
-btn_remove_time.grid(row=1, column=3, padx=(0, 8))
+btn_remove_time.grid(row=1, column=4, padx=(0, 8))
 
 ttk.Label(
     scheduler_card,
     text="Use 24-hour format, example: 09:00 or 18:30",
     background="#2d2d2d",
     foreground="#bdbdbd"
-).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 8))
+).grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 8))
 
 schedule_listbox = Listbox(
     scheduler_card,
@@ -973,18 +1026,45 @@ schedule_listbox = Listbox(
     font=("Segoe UI", 10),
     relief=FLAT
 )
-schedule_listbox.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(0, 10))
+schedule_listbox.grid(
+    row=5,
+    column=0,
+    columnspan=5,
+    sticky="nsew",
+    pady=(10, 10)
+)
 
-btn_start_scheduler = ttk.Button(scheduler_card, text="Start Scheduler", command=start_scheduler)
-btn_start_scheduler.grid(row=4, column=0, sticky="w", padx=(0, 8))
-btn_stop_scheduler = ttk.Button(scheduler_card, text="Stop Scheduler", command=stop_scheduler)
-btn_stop_scheduler.grid(row=4, column=1, sticky="w", padx=(0, 8))
+scheduler_control_row = ttk.Frame(scheduler_card, style="Card.TFrame")
+scheduler_control_row.grid(row=7, column=0, columnspan=5, sticky="w", pady=(10, 0))
+
+btn_start_scheduler = ttk.Button(scheduler_control_row, text="Start Scheduler", command=start_scheduler)
+btn_stop_scheduler = ttk.Button(scheduler_control_row, text="Stop Scheduler", command=stop_scheduler)
+
+status_label = ttk.Label(
+    scheduler_control_row,
+    textvariable=scheduler_status_var,
+    image=icon_red,
+    compound="left",
+    background="#2d2d2d",
+    foreground="#ffffff"
+)
+
+btn_start_scheduler.pack(side=LEFT, padx=(0, 8))
+btn_stop_scheduler.pack(side=LEFT, padx=(0, 8))
+status_label.pack(side=LEFT)
+
 main_buttons.extend([
     btn_add_time,
     btn_remove_time,
     btn_start_scheduler,
     btn_stop_scheduler
 ])
+
+days_frame = ttk.Frame(scheduler_card, style="Card.TFrame")
+days_frame.grid(row=4, column=0, columnspan=5, sticky="w", pady=(8, 8))
+
+for i, (day, var) in enumerate(selected_days.items()):
+    ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
 
 status_label = ttk.Label(
     scheduler_card,
@@ -993,22 +1073,25 @@ status_label = ttk.Label(
     compound="left",
     background="#2d2d2d",
     foreground="#ffffff"
-)
-status_label.grid(row=4, column=2, sticky="w")
+    )
 
 scheduler_card.columnconfigure(3, weight=1)
+scheduler_card.rowconfigure(5, weight=1)
+
+startup_row = ttk.Frame(scheduler_card, style="Card.TFrame")
+startup_row.grid(row=6, column=0, columnspan=5, sticky="w", pady=(10, 0))
 
 ttk.Button(
-    scheduler_card,
+    startup_row,
     text="Enable Startup",
     command=enable_run_on_startup
-).grid(row=5, column=0, sticky="w", pady=(10, 0), padx=(0, 8))
+).pack(side=LEFT, padx=(0, 8))
 
 ttk.Button(
-    scheduler_card,
+    startup_row,
     text="Disable Startup",
     command=disable_run_on_startup
-).grid(row=5, column=1, sticky="w", pady=(10, 0), padx=(0, 8))
+).pack(side=LEFT)
 
 # Progress card
 progress_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
