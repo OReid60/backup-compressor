@@ -1,6 +1,13 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "1.2.8"
-
+APP_VERSION = "2.0.1"
+BG = "#313338"
+CARD = "#2b2d31"
+CARD_DARK = "#1e1f22"
+TEXT = "#f2f3f5"
+MUTED = "#b5bac1"
+ACCENT = "#5865f2"
+ACCENT_HOVER = "#4752c4"
+BTN_WIDTH = 16
 # =========================================================
 # 📦 IMPORTS
 # =========================================================
@@ -119,9 +126,7 @@ def create_zip(output_path):
                         processed += 1
                         set_progress((processed / total_files) * 100, f"Backing up: {file}")
 
-
-    set_progress(100, "ZIP backup complete.")
-    
+    set_progress(100, "ZIP backup complete.")   
 
 def create_7z(output_path):
     progress_bar.config(mode="indeterminate")
@@ -336,7 +341,7 @@ def start_backup(show_messages=True):
     finally:
         set_ui_busy(False)
         if scheduler_running:
-            scheduler_status_var.set("Idle")
+            scheduler_status_var.set("Idle")      # when waiting
             status_label.config(image=icon_teal)
             update_tray_icon("#1abc9c")
         else:
@@ -454,67 +459,79 @@ def view_backup_log():
     text_area.config(state=DISABLED)
 
 def apply_modern_style():
+    
     style = ttk.Style()
     style.theme_use("clam")
 
-    root.configure(bg="#1e1e1e")
-    style.configure("TFrame", borderwidth=0)
-    style.configure("TFrame", background="#1e1e1e")
-    style.configure("Card.TFrame", background="#2d2d2d", relief="flat", borderwidth=0, padding=10)
-    style.configure("TLabel", background="#1e1e1e", foreground="#ffffff", font=("Segoe UI", 10))
-    style.configure("Title.TLabel", background="#1e1e1e", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
-    style.configure("Sub.TLabel", background="#1e1e1e", foreground="#bdbdbd", font=("Segoe UI", 10))
+    root.configure(bg=BG)
+
+    style.configure("TFrame", background=BG)
+    style.configure("Card.TFrame", background=CARD, relief="flat")
+    style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
 
     style.configure(
-        "TButton",
-        font=("Segoe UI", 10),
-        padding=8,
-        background="#3a3a3a",
-        foreground="#ffffff",
-        borderwidth=0
-    )
+    "TButton",
+    font=("Segoe UI", 10),
+    padding=8,
+    background=CARD_DARK,
+    foreground=TEXT,
+    borderwidth=0,
+    relief="flat"
+)
 
-    style.map("TButton", background=[("active", "#505050")])
+    style.map("TButton", background=[("active", "#3f4147")])
 
     style.configure(
-        "Accent.TButton",
-        background="#0078d4",
-        foreground="#ffffff",
-        font=("Segoe UI", 11, "bold"),
-        padding=10
-    )
+    "Accent.TButton",
+    background=ACCENT,
+    foreground="#ffffff",
+    font=("Segoe UI", 11, "bold"),
+    padding=10,
+    borderwidth=0,
+    relief="flat"
+)
 
-    style.map("Accent.TButton", background=[("active", "#106ebe")])
+    style.map("Accent.TButton", background=[("active", ACCENT_HOVER)])
 
     style.configure("TRadiobutton", background="#2d2d2d", foreground="#ffffff", font=("Segoe UI", 10))
     style.configure("TEntry", fieldbackground="#3a3a3a", foreground="#ffffff")
 
     # Notebook base
     style.configure(
-    "TNotebook",
-    background="#1e1e1e",
-    borderwidth=0,
-    relief="flat"
-)
+        "TNotebook",
+        background="#1e1e1e",
+        borderwidth=0,
+        relief="flat"
+    )
 
     # Tabs
     style.configure(
-    "TNotebook.Tab",
-    borderwidth=0,
-    relief="flat"
+        "TNotebook",
+        background=BG,
+        borderwidth=0,
+        relief="flat"
+)
+
+    style.configure(
+        "TNotebook.Tab",
+        background=CARD_DARK,
+        foreground=MUTED,
+        padding=(18, 10),
+        borderwidth=0,
+        relief="flat"
 )
 
     style.map(
         "TNotebook.Tab",
         background=[
-            ("selected", "#1e1e1e"),
-            ("active", "#3a3a3a")
+            ("selected", CARD),
+            ("active", "#3f4147")
         ],
         foreground=[
-            ("selected", "#ffffff"),
-            ("active", "#ffffff")
-        ]
-    )
+            ("selected", TEXT),
+            ("active", TEXT)
+    ]
+)
 
     style.layout("TNotebook.Tab", [
         ("Notebook.tab", {
@@ -528,22 +545,6 @@ def apply_modern_style():
             ]
         })
     ])
-
-    style.configure("Clean.TNotebook", background="#1e1e1e", borderwidth=0, relief="flat")
-    
-
-    style.layout("Clean.TNotebook", [
-    ("Notebook.client", {"sticky": "nswe", "border": 0})
-])
-
-    style.configure(
-    "Clean.TNotebook.Tab",
-    background="#2d2d2d",
-    foreground="#ffffff",
-    padding=(15, 8),
-    borderwidth=0,
-    relief="flat"
-)
 
 
 def set_progress(value, message):
@@ -576,13 +577,13 @@ def check_scheduled_backups():
         today = datetime.now().strftime("%a")
 
         if not selected_days[today].get():
-            scheduler_status_var.set("Idle")
+            scheduler_status_var.set("Idle")      # when waiting
             status_label.config(image=icon_teal)
             update_tray_icon("#1abc9c")
             root.after(60000, check_scheduled_backups)
             return
 
-        current_time = datetime.now().strftime("%H:%M")
+        current_time = datetime.now().strftime("%I:%M %p").lstrip("0")
 
         if current_time in scheduled_backup_times and current_time != last_run_time:
             last_run_time = current_time
@@ -598,7 +599,7 @@ def check_scheduled_backups():
 
         else:
                 if scheduler_status_var.get() != "Running Backup":
-                    scheduler_status_var.set("Idle")
+                    scheduler_status_var.set("Idle")      # when waiting
                     status_label.config(image=icon_teal)
                     update_tray_icon("#1abc9c")
 
@@ -610,24 +611,20 @@ def update_schedule_list():
         schedule_listbox.insert(END, backup_time)
 
 def add_backup_time():
-    backup_time = f"{hours_var.get()}:{minutes_var.get()}"
-
-    if not backup_time:
-        messagebox.showwarning("Missing Time", "Enter a backup time like 14:30.")
-        return
+    raw_time = f"{hours_var.get()}:{minutes_var.get()}"
 
     try:
-        datetime.strptime(backup_time, "%H:%M")
+        dt = datetime.strptime(raw_time, "%H:%M")
     except ValueError:
-        messagebox.showerror("Invalid Time", "Use 24-hour format, example: 09:00 or 18:30.")
+        messagebox.showerror("Invalid Time", "Please select a valid time.")
         return
+
+    backup_time = dt.strftime("%I:%M %p").lstrip("0")
 
     if backup_time not in scheduled_backup_times:
         scheduled_backup_times.append(backup_time)
         update_schedule_list()
         write_scheduler_status(f"Backup time added: {backup_time}")
-
-    schedule_time_var.set("")
     
 
 def remove_selected_time():
@@ -651,8 +648,7 @@ def update_tray_icon(color):
     if tray_icon:
         tray_icon.icon = create_tray_image(color)
 
-def start_scheduler():
-    update_tray_icon("#1abc9c")  # teal idle
+def start_scheduler():  # start
     global scheduler_running
 
     if not scheduled_backup_times:
@@ -660,12 +656,14 @@ def start_scheduler():
         return
 
     scheduler_running = True
-    scheduler_status_var.set("Running")
-    status_label.config(image=icon_green)
 
+    scheduler_status_var.set("Running")   # when started
+    status_label.config(image=icon_green)   
+    update_tray_icon("#2ecc71")   # green idle
+    
     write_scheduler_status("Scheduler started")
 
-def create_tray_image(color="#1abc9c"):
+def create_tray_image(color="#2ecc71"):
     size = 64
     padding = 2
 
@@ -682,13 +680,14 @@ def create_tray_image(color="#1abc9c"):
     return image
     
 
-def stop_scheduler():
-    update_tray_icon("#e74c3c")  # red stopped
+def stop_scheduler():   # stopped
     global scheduler_running
 
     scheduler_running = False
-    scheduler_status_var.set("Stopped")
+    
+    scheduler_status_var.set("Stopped")   
     status_label.config(image=icon_red)
+    update_tray_icon("#e74c3c")  # red stopped
 
     write_scheduler_status("Scheduler stopped")
 
@@ -723,7 +722,6 @@ def quit_app(icon=None, item=None):
     root.after(0, root.destroy)
 
 def setup_tray_icon():
-    
     global tray_icon
 
     tray_icon = pystray.Icon(
@@ -731,10 +729,8 @@ def setup_tray_icon():
         create_tray_image("#e74c3c"),
         "Backup Compressor",
         menu=pystray.Menu(
-            pystray.MenuItem("Open", show_window, default=True),  # 👈 KEY
-            pystray.MenuItem("Start Scheduler", lambda icon, item: root.after(0, start_scheduler)),
-            pystray.MenuItem("Stop Scheduler", lambda icon, item: root.after(0, stop_scheduler)),
-            pystray.MenuItem("Exit", quit_app)
+            pystray.MenuItem("Scheduler", show_window, default=True),  # KEY
+            pystray.MenuItem("Exit", quit_app),
     )
 )
 
@@ -770,16 +766,9 @@ def add_preset_time(time_str):
         scheduled_backup_times.append(time_str)
         update_schedule_list()
 
-def get_icon_path():
-    if getattr(sys, 'frozen', False):
-        return os.path.join(sys._MEIPASS, "app_icon.ico")
-    return os.path.join(os.path.dirname(__file__), "app_icon.ico")
 
-icon_path = get_icon_path()
 
 root = Tk()
-
-root.configure(highlightthickness=0, bd=0)
 
 selected_days = {
     "Mon": BooleanVar(value=True),
@@ -791,11 +780,7 @@ selected_days = {
     "Sun": BooleanVar(value=True),
 }
 
-icon_path = os.path.join(os.path.dirname(__file__), "app_icon.ico")
-
-if os.path.exists(icon_path):
-    root.iconbitmap(icon_path)
-
+root.iconbitmap(resource_path("app_icon.ico"))
 icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
 icon_teal = create_status_icon("#1abc9c")  # idle
@@ -820,18 +805,17 @@ apply_modern_style()
 destination_var = StringVar()
 format_var = StringVar(value="zip")
 schedule_time_var = StringVar()
-scheduler_status_var = StringVar(value="Scheduler: Stopped")
+scheduler_status_var = StringVar(value="Stopped")
 progress_var = DoubleVar(value=0)
 status_var = StringVar(value="Ready")
 summary_var = StringVar(value="Selected: 0 files | Total size: 0 B")
 
 # Main tab container
+notebook = ttk.Notebook(root)
 
-notebook_wrapper = Frame(root, bg="#1e1e1e", bd=0, highlightthickness=0)
-notebook_wrapper.pack(fill=BOTH, expand=True)
-
-notebook = ttk.Notebook(notebook_wrapper, style="Clean.TNotebook")
-notebook.pack(fill=BOTH, expand=True)
+notebook.pack_propagate(False)
+notebook.configure(style="TNotebook")
+notebook.pack(fill=BOTH, expand=True, padx=15, pady=15)
 
 backup_tab = ttk.Frame(notebook, padding=20)
 scheduler_tab = ttk.Frame(notebook, padding=20)
@@ -937,8 +921,7 @@ listbox = Listbox(
     selectforeground="#ffffff",
     font=("Segoe UI", 10),
     relief=FLAT,
-    bd=0,                    # 👈 ADD THIS
-    highlightthickness=0     # 👈 ADD THIS
+    height=6
 )
 listbox.pack(side=LEFT, fill=BOTH, expand=True)
 
@@ -946,6 +929,10 @@ list_scrollbar = Scrollbar(listbox_frame)
 list_scrollbar.pack(side=RIGHT, fill=Y)
 listbox.config(yscrollcommand=list_scrollbar.set)
 list_scrollbar.config(command=listbox.yview)
+
+
+
+
 
 # Settings card
 settings_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
@@ -989,6 +976,7 @@ ttk.Radiobutton(format_frame, text="RAR", variable=format_var, value="rar").pack
 scheduler_card = ttk.Frame(scheduler_tab, style="Card.TFrame", padding=15)
 scheduler_card.pack(fill=X, pady=10)
 
+
 ttk.Label(
     scheduler_card,
     text="Backup Scheduler",
@@ -1020,49 +1008,42 @@ minutes_dropdown = ttk.Combobox(
 )
 minutes_dropdown.grid(row=1, column=2, padx=(0, 10))
 
-ttk.Button(scheduler_card, text="Morning (09:00)", 
-    command=lambda: add_preset_time("09:00")).grid(row=2, column=0)
+ttk.Button(scheduler_card, text="Morning (09:00 AM)", width=BTN_WIDTH,
+    command=lambda: add_preset_time("9:00 AM")).grid(row=2, column=0)
 
-ttk.Button(scheduler_card, text="Evening (18:00)", 
-    command=lambda: add_preset_time("18:00")).grid(row=2, column=1)
+ttk.Button(scheduler_card, text="Evening (6:00 PM)", width=BTN_WIDTH,
+    command=lambda: add_preset_time("6:00 PM")).grid(row=2, column=1)
 
-btn_add_time = ttk.Button(scheduler_card, text="Add Time", command=add_backup_time)
-btn_add_time.grid(row=1, column=3, padx=(0, 8))
-btn_remove_time = ttk.Button(scheduler_card, text="Remove Selected", command=remove_selected_time)
-btn_remove_time.grid(row=1, column=4, padx=(0, 8))
+btn_add_time = ttk.Button(scheduler_card, text="Add Time", command=add_backup_time, width=BTN_WIDTH)
+btn_remove_time = ttk.Button(scheduler_card, text="Remove Selected", command=remove_selected_time, width=BTN_WIDTH)
+btn_add_time.grid(row=3, column=0, padx=10, pady=5)
+btn_remove_time.grid(row=3, column=1, padx=10, pady=5)
 
 ttk.Label(
     scheduler_card,
     text="Use 24-hour format, example: 09:00 or 18:30",
     background="#2d2d2d",
     foreground="#bdbdbd"
-).grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 8))
+).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 6))
 
 schedule_listbox = Listbox(
     scheduler_card,
-    height=4,
+    height=6,
+    width=18,
     bg="#1f1f1f",
     fg="#ffffff",
     selectbackground="#0078d4",
     selectforeground="#ffffff",
     font=("Segoe UI", 10),
-    relief=FLAT,
-    bd=0,                    # 👈 ADD
-    highlightthickness=0     # 👈 ADD
+    relief=FLAT
 )
-schedule_listbox.grid(
-    row=5,
-    column=0,
-    columnspan=5,
-    sticky="nsew",
-    pady=(10, 10)
-)
+schedule_listbox.grid(row=2, column=2, rowspan=2, sticky="nw", padx=(25, 0), pady=(0, 10))
 
 scheduler_control_row = ttk.Frame(scheduler_card, style="Card.TFrame")
-scheduler_control_row.grid(row=7, column=0, columnspan=5, sticky="w", pady=(10, 0))
+scheduler_control_row.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-btn_start_scheduler = ttk.Button(scheduler_control_row, text="Start Scheduler", command=start_scheduler)
-btn_stop_scheduler = ttk.Button(scheduler_control_row, text="Stop Scheduler", command=stop_scheduler)
+btn_start_scheduler = ttk.Button(scheduler_control_row, text="Start", width=BTN_WIDTH, command=start_scheduler)
+btn_stop_scheduler = ttk.Button(scheduler_control_row, text="Stop", width=BTN_WIDTH, command=stop_scheduler)
 
 status_label = ttk.Label(
     scheduler_control_row,
@@ -1085,27 +1066,32 @@ main_buttons.extend([
 ])
 
 days_frame = ttk.Frame(scheduler_card, style="Card.TFrame")
-days_frame.grid(row=4, column=0, columnspan=5, sticky="w", pady=(8, 8))
+days_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 10))
 
 for i, (day, var) in enumerate(selected_days.items()):
     ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
 
-
+scheduler_card.columnconfigure(0, weight=0)
+scheduler_card.columnconfigure(1, weight=0)
+scheduler_card.columnconfigure(2, weight=0)
 scheduler_card.columnconfigure(3, weight=1)
-scheduler_card.rowconfigure(5, weight=1)
+for i in range(10):
+    scheduler_card.rowconfigure(i, weight=0)
 
 startup_row = ttk.Frame(scheduler_card, style="Card.TFrame")
-startup_row.grid(row=6, column=0, columnspan=5, sticky="w", pady=(10, 0))
+startup_row.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
 ttk.Button(
     startup_row,
     text="Enable Startup",
+    width=BTN_WIDTH,
     command=enable_run_on_startup
 ).pack(side=LEFT, padx=(0, 8))
 
 ttk.Button(
     startup_row,
     text="Disable Startup",
+    width=BTN_WIDTH,
     command=disable_run_on_startup
 ).pack(side=LEFT)
 
