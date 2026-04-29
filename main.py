@@ -1,5 +1,5 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.8"
 
 # =========================================================
 # 📦 IMPORTS
@@ -458,9 +458,9 @@ def apply_modern_style():
     style.theme_use("clam")
 
     root.configure(bg="#1e1e1e")
-
+    style.configure("TFrame", borderwidth=0)
     style.configure("TFrame", background="#1e1e1e")
-    style.configure("Card.TFrame", background="#2d2d2d", relief="flat")
+    style.configure("Card.TFrame", background="#2d2d2d", relief="flat", borderwidth=0, padding=10)
     style.configure("TLabel", background="#1e1e1e", foreground="#ffffff", font=("Segoe UI", 10))
     style.configure("Title.TLabel", background="#1e1e1e", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
     style.configure("Sub.TLabel", background="#1e1e1e", foreground="#bdbdbd", font=("Segoe UI", 10))
@@ -491,21 +491,18 @@ def apply_modern_style():
 
     # Notebook base
     style.configure(
-        "TNotebook",
-        background="#1e1e1e",
-        borderwidth=0,
-        relief="flat"
-    )
+    "TNotebook",
+    background="#1e1e1e",
+    borderwidth=0,
+    relief="flat"
+)
 
     # Tabs
     style.configure(
-        "TNotebook.Tab",
-        background="#2d2d2d",
-        foreground="#ffffff",
-        padding=(15, 8),
-        borderwidth=0,
-        relief="flat"
-    )
+    "TNotebook.Tab",
+    borderwidth=0,
+    relief="flat"
+)
 
     style.map(
         "TNotebook.Tab",
@@ -531,6 +528,22 @@ def apply_modern_style():
             ]
         })
     ])
+
+    style.configure("Clean.TNotebook", background="#1e1e1e", borderwidth=0, relief="flat")
+    
+
+    style.layout("Clean.TNotebook", [
+    ("Notebook.client", {"sticky": "nswe", "border": 0})
+])
+
+    style.configure(
+    "Clean.TNotebook.Tab",
+    background="#2d2d2d",
+    foreground="#ffffff",
+    padding=(15, 8),
+    borderwidth=0,
+    relief="flat"
+)
 
 
 def set_progress(value, message):
@@ -757,9 +770,16 @@ def add_preset_time(time_str):
         scheduled_backup_times.append(time_str)
         update_schedule_list()
 
+def get_icon_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.join(sys._MEIPASS, "app_icon.ico")
+    return os.path.join(os.path.dirname(__file__), "app_icon.ico")
 
+icon_path = get_icon_path()
 
 root = Tk()
+
+root.configure(highlightthickness=0, bd=0)
 
 selected_days = {
     "Mon": BooleanVar(value=True),
@@ -771,7 +791,11 @@ selected_days = {
     "Sun": BooleanVar(value=True),
 }
 
-root.iconbitmap(resource_path("app_icon.ico"))
+icon_path = os.path.join(os.path.dirname(__file__), "app_icon.ico")
+
+if os.path.exists(icon_path):
+    root.iconbitmap(icon_path)
+
 icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
 icon_teal = create_status_icon("#1abc9c")  # idle
@@ -802,11 +826,12 @@ status_var = StringVar(value="Ready")
 summary_var = StringVar(value="Selected: 0 files | Total size: 0 B")
 
 # Main tab container
-notebook = ttk.Notebook(root)
 
-notebook.pack_propagate(False)
-notebook.configure(style="TNotebook")
-notebook.pack(fill=BOTH, expand=True, padx=15, pady=15)
+notebook_wrapper = Frame(root, bg="#1e1e1e", bd=0, highlightthickness=0)
+notebook_wrapper.pack(fill=BOTH, expand=True)
+
+notebook = ttk.Notebook(notebook_wrapper, style="Clean.TNotebook")
+notebook.pack(fill=BOTH, expand=True)
 
 backup_tab = ttk.Frame(notebook, padding=20)
 scheduler_tab = ttk.Frame(notebook, padding=20)
@@ -912,7 +937,8 @@ listbox = Listbox(
     selectforeground="#ffffff",
     font=("Segoe UI", 10),
     relief=FLAT,
-    height=6
+    bd=0,                    # 👈 ADD THIS
+    highlightthickness=0     # 👈 ADD THIS
 )
 listbox.pack(side=LEFT, fill=BOTH, expand=True)
 
@@ -920,10 +946,6 @@ list_scrollbar = Scrollbar(listbox_frame)
 list_scrollbar.pack(side=RIGHT, fill=Y)
 listbox.config(yscrollcommand=list_scrollbar.set)
 list_scrollbar.config(command=listbox.yview)
-
-
-
-
 
 # Settings card
 settings_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
@@ -1024,7 +1046,9 @@ schedule_listbox = Listbox(
     selectbackground="#0078d4",
     selectforeground="#ffffff",
     font=("Segoe UI", 10),
-    relief=FLAT
+    relief=FLAT,
+    bd=0,                    # 👈 ADD
+    highlightthickness=0     # 👈 ADD
 )
 schedule_listbox.grid(
     row=5,
@@ -1066,14 +1090,6 @@ days_frame.grid(row=4, column=0, columnspan=5, sticky="w", pady=(8, 8))
 for i, (day, var) in enumerate(selected_days.items()):
     ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
 
-status_label = ttk.Label(
-    scheduler_card,
-    textvariable=scheduler_status_var,
-    image=icon_red,
-    compound="left",
-    background="#2d2d2d",
-    foreground="#ffffff"
-    )
 
 scheduler_card.columnconfigure(3, weight=1)
 scheduler_card.rowconfigure(5, weight=1)
