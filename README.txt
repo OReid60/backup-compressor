@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # Multi Backup Compressor
 A Windows backup utility for compressing selected files and folders into ZIP, 7Z, or RAR archives.
 
