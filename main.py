@@ -1,5 +1,5 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.1"
 BG = "#313338"
 CARD = "#2b2d31"
 CARD_DARK = "#1e1f22"
@@ -20,6 +20,7 @@ import sys
 import py7zr
 import pystray
 import winshell
+import ctypes
 from PIL import Image as PILImage, ImageDraw    
 from datetime import datetime
 from tkinter import *
@@ -52,6 +53,21 @@ backup_log_file = os.path.join(logs_folder, "backup_log.txt")
 # =========================================================
 # 📁 FILE SELECTION & LIST MANAGEMENT
 # =========================================================
+def enforce_single_instance():
+    mutex_name = "BackupCompressorSingleInstanceMutex"
+
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    last_error = ctypes.windll.kernel32.GetLastError()
+
+    if last_error == 183:  # ERROR_ALREADY_EXISTS
+        messagebox.showwarning(
+            "Backup Compressor Already Running",
+            "Backup Compressor is already running.\n\nOnly one instance can run at a time."
+        )
+        sys.exit(0)
+
+    return mutex
+
 
 def resource_path(relative_path):
     try:
@@ -769,6 +785,7 @@ def add_preset_time(time_str):
 
 
 root = Tk()
+single_instance_mutex = enforce_single_instance()
 
 selected_days = {
     "Mon": BooleanVar(value=True),
