@@ -1,5 +1,5 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.0.3"
 BG = "#313338"
 CARD = "#2b2d31"
 CARD_DARK = "#1e1f22"
@@ -53,21 +53,6 @@ backup_log_file = os.path.join(logs_folder, "backup_log.txt")
 # =========================================================
 # 📁 FILE SELECTION & LIST MANAGEMENT
 # =========================================================
-def enforce_single_instance():
-    mutex_name = "BackupCompressorSingleInstanceMutex"
-
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-    last_error = ctypes.windll.kernel32.GetLastError()
-
-    if last_error == 183:  # ERROR_ALREADY_EXISTS
-        messagebox.showwarning(
-            "Backup Compressor Already Running",
-            "Backup Compressor is already running.\n\nOnly one instance can run at a time."
-        )
-        sys.exit(0)
-
-    return mutex
-
 
 def resource_path(relative_path):
     try:
@@ -303,6 +288,21 @@ def start_backup(show_messages=True):
 
     format_choice = format_var.get()
 
+    locked_files = get_locked_files()
+
+    if locked_files:
+        file_preview = "\n".join(locked_files[:10])
+
+        if show_messages:
+            messagebox.showwarning(
+                "Files In Use",
+                f"Backup cannot start because file(s) are currently in use:\n\n{file_preview}\n\nClose the file(s) and try again."
+            )
+        else:
+            write_scheduler_status("Scheduled backup skipped: file(s) in use.")
+
+        return False
+
     try:
         set_ui_busy(True)
         set_progress(0, "Starting backup...")
@@ -329,10 +329,11 @@ def start_backup(show_messages=True):
         save_app_settings()
 
         set_progress(100, f"Backup complete: {os.path.basename(output)}")
+
         if tray_icon:
             tray_icon.notify(
                 f"Backup completed: {os.path.basename(output)}",
-                 "Backup Compressor"
+                "Backup Compressor"
             )
 
         if show_messages:
@@ -353,16 +354,58 @@ def start_backup(show_messages=True):
             write_scheduler_status(f"Scheduled backup failed: {e}")
 
         return False
-    
+
     finally:
         set_ui_busy(False)
+
         if scheduler_running:
-            scheduler_status_var.set("Idle")      # when waiting
+            scheduler_status_var.set("Idle")
             status_label.config(image=icon_teal)
             update_tray_icon("#1abc9c")
         else:
             status_label.config(image=icon_red)
-            update_tray_icon("#e74c3c")    
+            update_tray_icon("#e74c3c")
+
+def is_file_in_use(file_path):
+    GENERIC_READ = 0x80000000
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    INVALID_HANDLE_VALUE = -1
+
+    handle = ctypes.windll.kernel32.CreateFileW(
+        file_path,
+        GENERIC_READ,
+        0,  # no sharing allowed
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        None
+    )
+
+    if handle == INVALID_HANDLE_VALUE:
+        error = ctypes.windll.kernel32.GetLastError()
+        return error in (32, 33)  # sharing violation / lock violation
+
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return False
+
+def get_locked_files():
+    locked_files = []
+
+    for item in selected_items:
+        if os.path.isfile(item):
+            if is_file_in_use(item):
+                locked_files.append(item)
+
+        elif os.path.isdir(item):
+            for root_dir, dirs, files in os.walk(item):
+                for file in files:
+                    full_path = os.path.join(root_dir, file)
+
+                    if is_file_in_use(full_path):
+                        locked_files.append(full_path)
+
+    return locked_files
 
 def clear_list():
     selected_items.clear()
@@ -785,7 +828,6 @@ def add_preset_time(time_str):
 
 
 root = Tk()
-single_instance_mutex = enforce_single_instance()
 
 selected_days = {
     "Mon": BooleanVar(value=True),
@@ -797,7 +839,7 @@ selected_days = {
     "Sun": BooleanVar(value=True),
 }
 
-root.iconbitmap(resource_path("app_icon.ico"))
+root.iconbitmap(os.path.join(os.path.dirname(__file__), "app_icon.ico"))
 icon_red = create_status_icon("#e74c3c")   # not running
 icon_green = create_status_icon("#2ecc71") # running
 icon_teal = create_status_icon("#1abc9c")  # idle
@@ -1115,6 +1157,61 @@ ttk.Button(
 # Progress card
 progress_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
 progress_card.pack(fill=X, pady=10)
+
+
+
+ttk.Label(
+    progress_card,
+    text="Backup Progress",
+    background="#2d2d2d",
+    foreground="#ffffff",
+    font=("Segoe UI", 12, "bold")
+).pack(anchor="w", pady=(0, 10))
+
+progress_bar = ttk.Progressbar(
+    progress_card,
+    variable=progress_var,
+    maximum=100
+)
+progress_bar.pack(fill=X, pady=(0, 8))
+
+ttk.Label(
+    progress_card,
+    textvariable=status_var,
+    background="#2d2d2d",
+    foreground="#bdbdbd"
+).pack(anchor="w")
+
+# Action buttons
+action_row = ttk.Frame(backup_tab)
+action_row.pack(fill=X, pady=15)
+action_row.columnconfigure(0, weight=1)
+action_row.columnconfigure(1, weight=1)
+
+btn_view_log = ttk.Button(action_row, text="View Backup Log", command=view_backup_log)
+btn_view_log.grid(row=0, column=0, sticky="w")
+
+btn_start_backup = ttk.Button(
+    action_row,
+    text="Start Backup",
+    command=start_backup,
+    style="Accent.TButton"
+)
+btn_start_backup.grid(row=0, column=1, sticky="e")
+
+main_buttons.extend([
+    btn_view_log,
+    btn_start_backup
+])
+
+load_app_settings()
+update_backup_summary()
+root.protocol("WM_DELETE_WINDOW", on_app_close)
+
+setup_tray_icon()
+check_scheduled_backups()
+
+_card.pack(fill=X, pady=10)
 
 
 
