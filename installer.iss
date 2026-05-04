@@ -1,14 +1,14 @@
 #define MyAppName "Backup Compressor"
-#define MyAppVersion "2.0.3"
+#define MyAppVersion "2.2.0"
 #define MyAppPublisher "V"
 #define MyAppExeName "Backup Compressor.exe"
 
 [Setup]
 AppId={{D37BB4F5-42C4-4C6B-91C7-BACKUPCOMPRESSOR}
 AppName={#MyAppName}
-AppVersion=2.0.3
+AppVersion=2.2.0
 AppPublisher={#MyAppPublisher}
-AppVerName=Backup Compressor 2.0.3
+AppVerName=Backup Compressor 2.2.0
 DefaultDirName={autopf}\{#MyAppName}
 DisableDirPage=yes
 DefaultGroupName={#MyAppName}

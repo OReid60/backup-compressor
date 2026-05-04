@@ -1,5 +1,5 @@
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.0.3"
+APP_VERSION = "2.2.0"
 BG = "#313338"
 CARD = "#2b2d31"
 CARD_DARK = "#1e1f22"
@@ -21,11 +21,16 @@ import py7zr
 import pystray
 import winshell
 import ctypes
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
 from PIL import Image as PILImage, ImageDraw    
 from datetime import datetime
 from tkinter import *
 from tkinter import filedialog, messagebox
 from tkinter import ttk
+
 # =========================================================
 # ⚙️ APP CONFIG / GLOBAL VARIABLES
 # =========================================================
@@ -33,12 +38,12 @@ main_buttons = []
 selected_items = []
 scheduled_backup_times = []
 scheduler_running = False
-last_run_time = None
-#settings_file = "app_settings.json"
+last_run_time = None    
 active_profile_path = None
 backup_running = False
 tray_icon = None
 app_should_exit = False 
+
 
 app_data_folder = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), APP_NAME)
 os.makedirs(app_data_folder, exist_ok=True)
@@ -231,8 +236,12 @@ def save_app_settings():
         "last_profile": active_profile_path,
         "destination": destination_var.get(),
         "format": format_var.get(),
-        "schedule_times": scheduled_backup_times
-    }
+        "schedule_times": scheduled_backup_times,
+
+        "sql_server": sql_server_var.get(),
+        "sql_database": sql_database_var.get(),
+        "sql_include_scheduler": sql_include_scheduler_var.get()
+}
 
     with open(settings_file, "w", encoding="utf-8") as file:
         json.dump(settings, file, indent=4)
@@ -249,6 +258,9 @@ def load_app_settings():
 
         destination_var.set(settings.get("destination", ""))
         format_var.set(settings.get("format", "zip"))
+        sql_server_var.set(settings.get("sql_server", r".\SQLEXPRESS"))
+        sql_database_var.set(settings.get("sql_database", "BackupCompressorTest"))
+        sql_include_scheduler_var.set(settings.get("sql_include_scheduler", False))
 
         scheduled_backup_times.clear()
         scheduled_backup_times.extend(settings.get("schedule_times", []))
@@ -604,8 +616,7 @@ def apply_modern_style():
             ]
         })
     ])
-
-
+    
 def set_progress(value, message):
     progress_var.set(value)
     status_var.set(message)
@@ -624,7 +635,42 @@ def count_backup_files():
     return total
 
 def run_backup_silent():
-    start_backup(show_messages=False)
+    file_backup_success = start_backup(show_messages=False)
+
+    if sql_include_scheduler_var.get():
+        write_scheduler_status("SQL scheduler option is enabled. Starting SQL backup.")
+        backup_sql_database_silent()
+    else:
+        write_scheduler_status("SQL scheduler option is disabled. Skipping SQL backup.")
+
+    return file_backup_success
+
+def backup_sql_database_silent():
+    selected_databases = [
+        db for db, var in sql_database_vars.items()
+        if var.get()
+    ]
+
+    if not selected_databases:
+        typed_db = sql_database_var.get().strip()
+        if typed_db:
+            selected_databases = [typed_db]
+
+    if not selected_databases:
+        write_scheduler_status("SQL backup skipped: no database selected.")
+        return False
+
+    success_count = 0
+
+    for database in selected_databases:
+        if backup_single_sql_database(database, show_messages=False):
+            success_count += 1
+
+    write_scheduler_status(
+        f"SQL scheduled backup finished: {success_count}/{len(selected_databases)} database(s)."
+    )
+
+    return success_count > 0
 
 def write_scheduler_status(message):
     with open(backup_log_file, "a", encoding="utf-8") as log:
@@ -643,14 +689,23 @@ def check_scheduled_backups():
             return
 
         current_time = datetime.now().strftime("%I:%M %p").lstrip("0")
+        today = datetime.now().strftime("%a")
 
-        if current_time in scheduled_backup_times and current_time != last_run_time:
-            last_run_time = current_time
+        for schedule in scheduled_backup_times:
+            if isinstance(schedule, dict):
+                schedule_time = schedule.get("time")
+                schedule_days = schedule.get("days", [])
 
-            scheduler_status_var.set("Running Backup")
-            status_label.config(image=icon_green)
-            update_tray_icon("#2ecc71")
-            write_scheduler_status(f"Scheduled backup started at {current_time}")
+                if current_time == schedule_time and today in schedule_days and current_time != last_run_time:
+                    last_run_time = current_time
+                    # run backup here
+                if current_time in scheduled_backup_times and current_time != last_run_time:
+                    last_run_time = current_time
+
+                    scheduler_status_var.set("Running Backup")
+                    status_label.config(image=icon_green)
+                    update_tray_icon("#2ecc71")
+                    write_scheduler_status(f"Scheduled backup started at {current_time}")
 
             backup_thread = threading.Thread(target=run_backup_silent)
             backup_thread.daemon = True
@@ -666,42 +721,66 @@ def check_scheduled_backups():
 
 def update_schedule_list():
     schedule_listbox.delete(0, END)
-    for backup_time in scheduled_backup_times:
-        schedule_listbox.insert(END, backup_time)
+
+    for schedule in scheduled_backup_times:
+        if isinstance(schedule, dict):
+            name = schedule.get("name", "Local Backup")
+            time = schedule.get("time", "")
+            description = schedule.get("description", "")
+            days = ", ".join(schedule.get("days", []))
+
+            display_text = f"{name} | {time} | {description} | {days}"
+            schedule_listbox.insert(END, display_text)
+        else:
+            # old saved schedules support
+            schedule_listbox.insert(END, schedule)
 
 def add_backup_time():
-    raw_time = f"{hours_var.get()}:{minutes_var.get()}"
+    hour = hours_var.get()
+    minute = minutes_var.get()
+    ampm = ampm_var.get()
 
-    try:
-        dt = datetime.strptime(raw_time, "%H:%M")
-    except ValueError:
-        messagebox.showerror("Invalid Time", "Please select a valid time.")
-        return
+    backup_time = f"{int(hour)}:{minute} {ampm}"
 
-    backup_time = dt.strftime("%I:%M %p").lstrip("0")
+    new_schedule = {
+        "name": schedule_name_var.get().strip() or "Local Backup",
+        "time": backup_time,
+        "description": schedule_description_var.get().strip() or "No description",
+        "days": [day for day, var in selected_days.items() if var.get()]
+    }
 
-    if backup_time not in scheduled_backup_times:
-        scheduled_backup_times.append(backup_time)
-        update_schedule_list()
-        write_scheduler_status(f"Backup time added: {backup_time}")
-    
+    scheduled_backup_times.append(new_schedule)
 
+    update_schedule_list()
+    save_app_settings()
+
+    write_scheduler_status(
+        f"Backup schedule added: {new_schedule['name']} at {backup_time}"
+    )
+        
 def remove_selected_time():
     selected = schedule_listbox.curselection()
 
     if not selected:
-        messagebox.showwarning("No Time Selected", "Select a backup time to remove.")
+        messagebox.showwarning(
+            "No Schedule Selected",
+            "Select a schedule to remove."
+        )
         return
 
     index = selected[0]
-    time_value = schedule_listbox.get(index)
 
-    schedule_listbox.delete(index)
+    removed_schedule = scheduled_backup_times.pop(index)
 
-    if time_value in scheduled_backup_times:
-        scheduled_backup_times.remove(time_value)
+    update_schedule_list()
 
-    write_scheduler_status(f"Backup time removed: {time_value}")
+    save_app_settings()
+
+    if isinstance(removed_schedule, dict):
+        schedule_name = removed_schedule.get("name", "Unknown")
+        write_scheduler_status(
+            f"Schedule removed: {schedule_name}"
+        )
 
 def update_tray_icon(color):
     if tray_icon:
@@ -736,8 +815,7 @@ def create_tray_image(color="#2ecc71"):
         width=2
     )
 
-    return image
-    
+    return image    
 
 def stop_scheduler():   # stopped
     global scheduler_running
@@ -820,14 +898,257 @@ def disable_run_on_startup():
 
     messagebox.showinfo("Startup Disabled", "App will no longer run when Windows starts.")
 
-def add_preset_time(time_str):
-    if time_str not in scheduled_backup_times:
-        scheduled_backup_times.append(time_str)
-        update_schedule_list()
+def backup_mysql_database(host, user, password, database, output_file):
+    command = [
+        "mysqldump",
+        "-h", host,
+        "-u", user,
+        f"-p{password}",
+        database
+    ]
 
+    with open(output_file, "w", encoding="utf-8") as file:
+        subprocess.run(command, stdout=file, stderr=subprocess.PIPE, text=True, check=True)
+
+def test_sql_connection():
+    server = sql_server_var.get().strip()
+
+    if not server:
+        messagebox.showwarning("Missing Server", "Enter SQL Server name.")
+        return
+
+    command = [
+        "sqlcmd",
+        "-S", server,
+        "-E",
+        "-C",
+        "-Q", "SELECT @@VERSION"
+    ]
+
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+        messagebox.showinfo("SQL Connection", "SQL Server connection successful.")
+    except Exception as e:
+        messagebox.showerror("SQL Connection Failed", str(e))
+
+def backup_single_sql_database(database, show_messages=True):
+    server = sql_server_var.get().strip()
+    destination = destination_var.get().strip()
+
+    if not server or not database:
+        if show_messages:
+            messagebox.showwarning("Missing SQL Info", "Enter SQL Server and database name.")
+        return False
+
+    if not destination:
+        if show_messages:
+            messagebox.showwarning("No Destination", "Choose a backup destination first.")
+        return False
+
+    os.makedirs(destination, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_file = os.path.join(destination, f"{database}_{timestamp}.bak")
+
+    query = f"BACKUP DATABASE [{database}] TO DISK = N'{output_file}' WITH INIT;"
+
+    command = [
+        "sqlcmd",
+        "-S", server,
+        "-E",
+        "-C",
+        "-Q", query
+    ]
+
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+        write_scheduler_status(f"SQL backup complete: {database}")
+        return True
+
+    except Exception as e:
+        write_scheduler_status(f"SQL backup failed for {database}: {e}")
+
+        if show_messages:
+            messagebox.showerror("SQL Backup Failed", str(e))
+
+        return False
+
+def backup_sql_database():
+    selected_databases = [
+        db for db, var in sql_database_vars.items()
+        if var.get()
+    ]
+
+    if not selected_databases:
+        typed_db = sql_database_var.get().strip()
+        if typed_db:
+            selected_databases = [typed_db]
+
+    if not selected_databases:
+        messagebox.showwarning("No Database", "Select or enter at least one database.")
+        return False
+
+    success_count = 0
+
+    for database in selected_databases:
+        if backup_single_sql_database(database, show_messages=False):
+            success_count += 1
+
+    messagebox.showinfo(
+        "SQL Backup Complete",
+        f"Backed up {success_count} of {len(selected_databases)} database(s)."
+    )
+
+    return success_count > 0
+
+def load_sql_databases():
+    server = sql_server_var.get().strip()
+
+    if not server:
+        messagebox.showwarning("Missing Server", "Enter SQL Server name.")
+        return
+
+    command = [
+        "sqlcmd",
+        "-S", server,
+        "-E",
+        "-C",
+        "-h", "-1",
+        "-W",
+        "-Q",
+        "SET NOCOUNT ON; SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name;"
+    ]
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+
+        database_names = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+
+        for widget in sql_database_list_frame.winfo_children():
+            widget.destroy()
+
+        sql_database_vars.clear()
+
+        if not database_names:
+            ttk.Label(
+                sql_database_list_frame,
+                text="No user databases found.",
+                background=CARD,
+                foreground=MUTED
+            ).pack(anchor="w")
+            return
+
+        for db_name in database_names:
+            var = BooleanVar(value=False)
+            sql_database_vars[db_name] = var
+
+            ttk.Checkbutton(
+                sql_database_list_frame,
+                text=db_name,
+                variable=var
+            ).pack(anchor="w", pady=2)
+
+        messagebox.showinfo("SQL Databases", f"Loaded {len(database_names)} database(s).")
+
+    except Exception as e:
+        messagebox.showerror("Load Databases Failed", str(e))
+
+def connect_google_drive():
+    global google_drive_service
+
+    credentials_path = resource_path("credentials.json")
+    token_path = os.path.join(app_data_folder, "token.json")
+
+    creds = None
+
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, GOOGLE_DRIVE_SCOPES)
+
+    if not creds or not creds.valid:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            credentials_path,
+            GOOGLE_DRIVE_SCOPES
+        )
+        creds = flow.run_local_server(port=0)
+
+        with open(token_path, "w", encoding="utf-8") as token_file:
+            token_file.write(creds.to_json())
+
+    google_drive_service = build("drive", "v3", credentials=creds)
+
+    messagebox.showinfo("Google Drive", "Google Drive connected successfully.")
+
+
+def upload_file_to_google_drive(file_path):
+    global google_drive_service
+
+    if google_drive_service is None:
+        connect_google_drive()
+
+    file_metadata = {
+        "name": os.path.basename(file_path)
+    }
+
+    media = MediaFileUpload(file_path, resumable=True)
+
+    uploaded_file = google_drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id"
+    ).execute()
+
+    return uploaded_file.get("id")
+
+
+def upload_test_to_google_drive():
+    test_file = os.path.join(app_data_folder, "google_drive_test.txt")
+
+    with open(test_file, "w", encoding="utf-8") as file:
+        file.write("Google Drive test upload from Backup Compressor.")
+
+    try:
+        upload_file_to_google_drive(test_file)
+        messagebox.showinfo("Google Drive", "Test file uploaded successfully.")
+    except Exception as e:
+        messagebox.showerror("Google Drive Upload Failed", str(e))
+
+def disconnect_google_drive():
+    global google_drive_service
+
+    token_path = os.path.join(app_data_folder, "token.json")
+
+    try:
+        if os.path.exists(token_path):
+            os.remove(token_path)
+
+        google_drive_service = None
+
+        messagebox.showinfo(
+            "Google Drive",
+            "Google Drive account disconnected."
+        )
+
+    except Exception as e:
+        messagebox.showerror(
+            "Disconnect Failed",
+            str(e)
+        )
+def toggle_run_on_startup():
+    if run_on_startup_var.get():
+        enable_run_on_startup()
+    else:
+        disable_run_on_startup()
 
 
 root = Tk()
+
+
+GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+google_drive_service = None
 
 selected_days = {
     "Mon": BooleanVar(value=True),
@@ -863,8 +1184,15 @@ apply_modern_style()
 
 destination_var = StringVar()
 format_var = StringVar(value="zip")
+sql_server_var = StringVar(value=r".\SQLEXPRESS")
+sql_database_var = StringVar(value="BackupCompressorTest")
+sql_database_vars = {}
+sql_include_scheduler_var = BooleanVar(value=False)
+run_on_startup_var = BooleanVar(value=False)
 schedule_time_var = StringVar()
 scheduler_status_var = StringVar(value="Stopped")
+schedule_name_var = StringVar(value="Local Backup")
+schedule_description_var = StringVar(value="Files/Folders backup")
 progress_var = DoubleVar(value=0)
 status_var = StringVar(value="Ready")
 summary_var = StringVar(value="Selected: 0 files | Total size: 0 B")
@@ -882,11 +1210,9 @@ logs_tab = ttk.Frame(notebook, padding=20)
 settings_tab = ttk.Frame(notebook, padding=20)
 
 notebook.add(backup_tab, text="Backup")
-notebook.add(scheduler_tab, text="Scheduler")
-# notebook.add(logs_tab, text="Logs")
+notebook.add(scheduler_tab, text="Scheduler")   
 logs_card = ttk.Frame(logs_tab, style="Card.TFrame", padding=15)
-logs_card.pack(fill=BOTH, expand=True)
-
+logs_card.pack(fill=BOTH, expand=True)  
 
 ttk.Label(
     logs_card,
@@ -934,6 +1260,133 @@ btn_load_profile.pack(side=LEFT)
 main_buttons.extend([
     btn_save_profile,
     btn_load_profile
+])
+
+# SQL Backup Settings card
+sql_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+sql_card.pack(fill=X, pady=10)
+
+ttk.Label(
+    sql_card,
+    text="SQL Backup Settings",
+    background=CARD,
+    foreground=TEXT,
+    font=("Segoe UI", 12, "bold")
+).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+ttk.Label(sql_card, text="Server:", background=CARD, foreground=TEXT).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
+
+sql_server_entry = ttk.Entry(sql_card, textvariable=sql_server_var, width=30)
+sql_server_entry.grid(row=1, column=1, sticky="w", pady=5)
+
+ttk.Label(sql_card, text="Database:", background=CARD, foreground=TEXT).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=5)
+
+sql_database_entry = ttk.Entry(sql_card, textvariable=sql_database_var, width=30)
+sql_database_entry.grid(row=2, column=1, sticky="w", pady=5)
+
+btn_load_databases = ttk.Button(
+    sql_card,
+    text="Load Databases",
+    width=BTN_WIDTH,
+    command=load_sql_databases
+)
+
+
+sql_database_list_frame = ttk.Frame(sql_card, style="Card.TFrame")
+sql_database_list_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 5))
+
+ttk.Checkbutton(
+    sql_card,
+    text="Include SQL backup in scheduler",
+    variable=sql_include_scheduler_var
+).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 8))
+
+btn_test_sql = ttk.Button(sql_card, text="Test Connection", width=BTN_WIDTH, command=test_sql_connection)
+btn_test_sql.grid(
+    row=4,
+    column=0,
+    sticky="w",
+    padx=(0, 8),
+    pady=5
+)
+main_buttons.append(btn_load_databases)
+
+btn_load_databases.grid(
+    row=4,
+    column=1,
+    sticky="w",
+    padx=(0, 8),
+    pady=5
+)
+btn_backup_sql = ttk.Button(sql_card, text="Backup SQL", width=BTN_WIDTH, command=backup_sql_database)
+btn_backup_sql.grid(
+    row=4,
+    column=2,
+    sticky="w",
+    pady=5
+)
+
+main_buttons.extend([
+    btn_test_sql,
+    btn_backup_sql
+])
+
+# Google Drive Settings card
+google_drive_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+google_drive_card.pack(fill=X, pady=10)
+
+ttk.Label(
+    google_drive_card,
+    text="Google Drive Backup Settings",
+    background=CARD,
+    foreground=TEXT,
+    font=("Segoe UI", 12, "bold")
+).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+btn_connect_google = ttk.Button(
+    google_drive_card,
+    text="Google Drive",
+    width=BTN_WIDTH,
+    command=connect_google_drive
+)
+btn_connect_google.grid(
+    row=1,
+    column=0,
+    sticky="w",
+    padx=(0, 8),
+    pady=5
+)
+
+btn_test_google = ttk.Button(
+    google_drive_card,
+    text="Upload Test",
+    width=BTN_WIDTH,
+    command=upload_test_to_google_drive
+)
+btn_test_google.grid(
+    row=1,
+    column=2,
+    sticky="w",
+    pady=5
+)
+
+btn_disconnect_google = ttk.Button(
+    google_drive_card,
+    text="Disconnect",
+    width=BTN_WIDTH,
+    command=disconnect_google_drive
+)
+btn_disconnect_google.grid(
+    row=1,
+    column=1,
+    sticky="w",
+    padx=(0, 8),
+    pady=5
+)
+main_buttons.extend([
+    btn_connect_google,
+    btn_test_google,
+    btn_disconnect_google
 ])
 
 
@@ -987,11 +1440,7 @@ listbox.pack(side=LEFT, fill=BOTH, expand=True)
 list_scrollbar = Scrollbar(listbox_frame)
 list_scrollbar.pack(side=RIGHT, fill=Y)
 listbox.config(yscrollcommand=list_scrollbar.set)
-list_scrollbar.config(command=listbox.yview)
-
-
-
-
+list_scrollbar.config(command=listbox.yview)    
 
 # Settings card
 settings_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
@@ -1035,6 +1484,31 @@ ttk.Radiobutton(format_frame, text="RAR", variable=format_var, value="rar").pack
 scheduler_card = ttk.Frame(scheduler_tab, style="Card.TFrame", padding=15)
 scheduler_card.pack(fill=X, pady=10)
 
+ttk.Label(
+    scheduler_card,
+    text="Schedule Name:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=1, column=0, sticky="w", pady=(0, 5))
+
+ttk.Entry(
+    scheduler_card,
+    textvariable=schedule_name_var,
+    width=25
+).grid(row=1, column=1, sticky="w", pady=(0, 5))
+
+ttk.Label(
+    scheduler_card,
+    text="Description:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=2, column=0, sticky="w", pady=(0, 5))
+
+ttk.Entry(
+    scheduler_card,
+    textvariable=schedule_description_var,
+    width=35
+).grid(row=2, column=1, columnspan=2, sticky="w", pady=(0, 5))
 
 ttk.Label(
     scheduler_card,
@@ -1044,51 +1518,65 @@ ttk.Label(
     font=("Segoe UI", 12, "bold")
 ).grid(row=0, column=0, sticky="w", columnspan=4, pady=(0, 10))
 
-ttk.Label(scheduler_card, text="Backup Time:", background="#2d2d2d", foreground="#ffffff").grid(row=1, column=0, sticky="w", padx=(0, 8))
+#ttk.Label(scheduler_card, text="Backup Time:", background="#2d2d2d", foreground="#ffffff").grid(row=1, column=0, sticky="w", padx=(0, 8))
 
 hours_var = StringVar(value="12")
 minutes_var = StringVar(value="00")
+ampm_var = StringVar(value="AM")
+
+time_row = ttk.Frame(scheduler_card, style="Card.TFrame")
+time_row.grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 8))
+
+ttk.Label(
+    time_row,
+    text="Backup Time:",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 8))
 
 hours_dropdown = ttk.Combobox(
-    scheduler_card,
+    time_row,
     textvariable=hours_var,
-    values=[f"{i:02d}" for i in range(24)],
-    width=5,
+    values=[f"{i:02d}" for i in range(1, 13)],
+    width=4,
     state="readonly"
 )
-hours_dropdown.grid(row=1, column=1, padx=(0, 5))
+hours_dropdown.pack(side=LEFT, padx=(0, 2))
 
 minutes_dropdown = ttk.Combobox(
-    scheduler_card,
+    time_row,
     textvariable=minutes_var,
     values=[f"{i:02d}" for i in range(60)],
-    width=5,
+    width=4,
     state="readonly"
 )
-minutes_dropdown.grid(row=1, column=2, padx=(0, 10))
+minutes_dropdown.pack(side=LEFT, padx=(0, 2))
 
-ttk.Button(scheduler_card, text="Morning (09:00 AM)", width=BTN_WIDTH,
-    command=lambda: add_preset_time("9:00 AM")).grid(row=2, column=0)
-
-ttk.Button(scheduler_card, text="Evening (6:00 PM)", width=BTN_WIDTH,
-    command=lambda: add_preset_time("6:00 PM")).grid(row=2, column=1)
+ampm_dropdown = ttk.Combobox(
+    time_row,
+    textvariable=ampm_var,
+    values=["AM", "PM"],
+    width=4,
+    state="readonly"
+)
+ampm_dropdown.pack(side=LEFT)
 
 btn_add_time = ttk.Button(scheduler_card, text="Add Time", command=add_backup_time, width=BTN_WIDTH)
 btn_remove_time = ttk.Button(scheduler_card, text="Remove Selected", command=remove_selected_time, width=BTN_WIDTH)
-btn_add_time.grid(row=3, column=0, padx=10, pady=5)
-btn_remove_time.grid(row=3, column=1, padx=10, pady=5)
+btn_add_time.grid(row=4, column=0, padx=10, pady=5)
+btn_remove_time.grid(row=4, column=1, padx=10, pady=5)
 
 ttk.Label(
     scheduler_card,
-    text="Use 24-hour format, example: 09:00 or 18:30",
+    text="Use 12-hour format, example: 9:00 AM or 6:30 PM",
     background="#2d2d2d",
     foreground="#bdbdbd"
-).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 6))
+).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 6))
 
 schedule_listbox = Listbox(
     scheduler_card,
-    height=6,
-    width=18,
+    height=10,
+    width=75,
     bg="#1f1f1f",
     fg="#ffffff",
     selectbackground="#0078d4",
@@ -1096,13 +1584,30 @@ schedule_listbox = Listbox(
     font=("Segoe UI", 10),
     relief=FLAT
 )
-schedule_listbox.grid(row=2, column=2, rowspan=2, sticky="nw", padx=(25, 0), pady=(0, 10))
+schedule_listbox.grid(
+    row=1,
+    column=4,
+    rowspan=8,
+    sticky="nw",
+    padx=(20, 0),
+    pady=(0, 10)
+)
 
 scheduler_control_row = ttk.Frame(scheduler_card, style="Card.TFrame")
 scheduler_control_row.grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-btn_start_scheduler = ttk.Button(scheduler_control_row, text="Start", width=BTN_WIDTH, command=start_scheduler)
-btn_stop_scheduler = ttk.Button(scheduler_control_row, text="Stop", width=BTN_WIDTH, command=stop_scheduler)
+btn_start_scheduler = ttk.Button(
+    scheduler_control_row,
+    text="Start Schedule",
+    width=BTN_WIDTH,
+    command=start_scheduler
+)
+btn_stop_scheduler = ttk.Button(
+    scheduler_control_row,
+    text="Stop Schedule",
+    width=BTN_WIDTH,
+    command=stop_scheduler
+)
 
 status_label = ttk.Label(
     scheduler_control_row,
@@ -1125,93 +1630,38 @@ main_buttons.extend([
 ])
 
 days_frame = ttk.Frame(scheduler_card, style="Card.TFrame")
-days_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 10))
+days_frame.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 10))
 
 for i, (day, var) in enumerate(selected_days.items()):
     ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
 
+startup_checkbox = ttk.Checkbutton(
+    scheduler_card,
+    text="Start Backup Compressor with Windows",
+    variable=run_on_startup_var,
+    command=toggle_run_on_startup
+)
+
+startup_checkbox.grid(
+    row=7,
+    column=0,
+    columnspan=3,
+    sticky="w",
+    pady=(10, 10)
+)
+
 scheduler_card.columnconfigure(0, weight=0)
 scheduler_card.columnconfigure(1, weight=0)
 scheduler_card.columnconfigure(2, weight=0)
-scheduler_card.columnconfigure(3, weight=1)
+scheduler_card.columnconfigure(3, weight=0)
+scheduler_card.columnconfigure(4, weight=1)
 for i in range(10):
     scheduler_card.rowconfigure(i, weight=0)
 
-startup_row = ttk.Frame(scheduler_card, style="Card.TFrame")
-startup_row.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
-
-ttk.Button(
-    startup_row,
-    text="Enable Startup",
-    width=BTN_WIDTH,
-    command=enable_run_on_startup
-).pack(side=LEFT, padx=(0, 8))
-
-ttk.Button(
-    startup_row,
-    text="Disable Startup",
-    width=BTN_WIDTH,
-    command=disable_run_on_startup
-).pack(side=LEFT)
 
 # Progress card
 progress_card = ttk.Frame(backup_tab, style="Card.TFrame", padding=15)
-progress_card.pack(fill=X, pady=10)
-
-
-
-ttk.Label(
-    progress_card,
-    text="Backup Progress",
-    background="#2d2d2d",
-    foreground="#ffffff",
-    font=("Segoe UI", 12, "bold")
-).pack(anchor="w", pady=(0, 10))
-
-progress_bar = ttk.Progressbar(
-    progress_card,
-    variable=progress_var,
-    maximum=100
-)
-progress_bar.pack(fill=X, pady=(0, 8))
-
-ttk.Label(
-    progress_card,
-    textvariable=status_var,
-    background="#2d2d2d",
-    foreground="#bdbdbd"
-).pack(anchor="w")
-
-# Action buttons
-action_row = ttk.Frame(backup_tab)
-action_row.pack(fill=X, pady=15)
-action_row.columnconfigure(0, weight=1)
-action_row.columnconfigure(1, weight=1)
-
-btn_view_log = ttk.Button(action_row, text="View Backup Log", command=view_backup_log)
-btn_view_log.grid(row=0, column=0, sticky="w")
-
-btn_start_backup = ttk.Button(
-    action_row,
-    text="Start Backup",
-    command=start_backup,
-    style="Accent.TButton"
-)
-btn_start_backup.grid(row=0, column=1, sticky="e")
-
-main_buttons.extend([
-    btn_view_log,
-    btn_start_backup
-])
-
-load_app_settings()
-update_backup_summary()
-root.protocol("WM_DELETE_WINDOW", on_app_close)
-
-setup_tray_icon()
-check_scheduled_backups()
-
-_card.pack(fill=X, pady=10)
+progress_card.pack(fill=X, pady=10) 
 
 
 
