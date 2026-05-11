@@ -1,3 +1,6 @@
+Download Link Below
+https://github.com/OReid60/backup-compressor/releases/download/2.5.1/Backup.Compressor.Setup.2.5.1.exe
+
 Backup Compressor
 Version: 2.5.1
 
