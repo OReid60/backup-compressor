@@ -1,4 +1,4 @@
-# ========================================================= 
+﻿# =========================================================
 # Imports
 # =========================================================
 import os
@@ -7,7 +7,7 @@ import subprocess
 import json
 import threading
 import queue
-import sys  
+import sys
 import pystray
 import winshell
 import ctypes
@@ -25,7 +25,8 @@ from tkinter import ttk
 # Constants
 # =========================================================
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.6.2"
+ALWAYS_RUN_AS_ADMIN = True
 
 BG = "#313338"
 CARD = "#2b2d31"
@@ -39,6 +40,15 @@ CLOUD_SCHEDULE_COLOR = "#1abc9c"
 STOPPED_COLOR = "#ffffff"
 BTN_WIDTH = 16
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+OFFICE_FILE_EXTENSIONS = (
+    ".doc", ".docx", ".docm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+    ".ppt", ".pptx", ".pptm",
+    ".pdf", ".txt", ".rtf", ".csv",
+    ".png", ".jpeg", ".pdn",
+    ".one", ".pst", ".ost"
+)
+OFFICE_BACKUP_FOLDER_NAMES = ("Desktop", "Documents", "Downloads")
 
 # Main color and sizing constants are kept together so UI sections share one
 # visual language without repeating magic values.
@@ -51,7 +61,12 @@ selected_items = []
 cloud_selected_items = []
 scheduled_backup_times = []
 scheduler_running = False
-last_run_time = None    
+last_run_time = None
+schedule_last_run_times = {}
+scheduler_section_order = ["manual", "auto"]
+scheduler_section_widgets = {}
+cloud_section_order = ["cloud_items", "google_drive", "sql", "cloud_schedule"]
+cloud_section_widgets = {}
 active_profile_path = None
 backup_running = False
 compression_progress_window = None
@@ -61,7 +76,7 @@ progress_queue = queue.Queue()
 backup_result_queue = queue.Queue()
 ui_action_queue = queue.Queue()
 tray_icon = None
-app_should_exit = False 
+app_should_exit = False
 
 
 # App data lives in %APPDATA%\Backup Compressor so settings and logs persist
@@ -80,6 +95,53 @@ backup_events_file = os.path.join(logs_folder, "backup_events.jsonl")
 # =========================================================
 # File Paths
 # =========================================================
+
+def is_running_as_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def relaunch_as_admin_if_needed():
+    if not ALWAYS_RUN_AS_ADMIN or is_running_as_admin():
+        return
+
+    executable = sys.executable
+    if getattr(sys, "frozen", False):
+        arguments = subprocess.list2cmdline(sys.argv[1:])
+    else:
+        arguments = subprocess.list2cmdline([os.path.abspath(sys.argv[0])] + sys.argv[1:])
+
+    try:
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            executable,
+            arguments,
+            os.getcwd(),
+            1
+        )
+
+        if result > 32:
+            sys.exit(0)
+
+    except Exception:
+        pass
+
+    sys.exit(1)
+
+def hide_console_window():
+    if os.name != "nt":
+        return
+
+    try:
+        console_window = ctypes.windll.kernel32.GetConsoleWindow()
+
+        if console_window:
+            ctypes.windll.user32.ShowWindow(console_window, 0)
+
+    except Exception:
+        pass
 
 def resource_path(relative_path):
     try:
@@ -121,6 +183,16 @@ def choose_destination():
     if folder:
         destination_var.set(folder)
 
+def choose_manual_backup_destination():
+    folder = filedialog.askdirectory(parent=root)
+    if folder:
+        manual_backup_destination_var.set(folder)
+
+def choose_auto_backup_destination():
+    folder = filedialog.askdirectory(parent=root)
+    if folder:
+        auto_backup_destination_var.set(folder)
+
 def get_backup_name(extension):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return f"backup_{timestamp}.{extension}"
@@ -139,6 +211,7 @@ def create_zip(output_path, items=None):
     items = selected_items if items is None else items
     total_files = count_backup_files(items)
     processed = 0
+    skipped_files = []
 
     if total_files == 0:
         raise ValueError("No files found to back up.")
@@ -146,7 +219,11 @@ def create_zip(output_path, items=None):
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for item in items:
             if os.path.isfile(item):
-                zipf.write(item, os.path.basename(item))
+                try:
+                    zipf.write(item, os.path.basename(item))
+                except (OSError, PermissionError) as e:
+                    skipped_files.append((item, str(e)))
+
                 processed += 1
                 set_progress(
                     (processed / total_files) * 100,
@@ -158,7 +235,11 @@ def create_zip(output_path, items=None):
                     for file in files:
                         full_path = os.path.join(root_dir, file)
                         arcname = os.path.relpath(full_path, os.path.dirname(item))
-                        zipf.write(full_path, arcname)
+
+                        try:
+                            zipf.write(full_path, arcname)
+                        except (OSError, PermissionError) as e:
+                            skipped_files.append((full_path, str(e)))
 
                         processed += 1
                         set_progress(
@@ -166,7 +247,22 @@ def create_zip(output_path, items=None):
                             f"Compressing: {file}"
                         )
 
-    set_progress(100, "ZIP backup complete.")
+    if skipped_files:
+        write_backup_event(
+            "local",
+            "info",
+            f"ZIP backup skipped {len(skipped_files)} file(s) that could not be read.",
+            output_file=output_path,
+            destination=os.path.dirname(output_path),
+            backup_format="ZIP"
+        )
+        notify_tray(
+            "Backup Completed With Skips",
+            f"{len(skipped_files)} file(s) were in use or unreadable and were skipped."
+        )
+        set_progress(100, f"ZIP backup complete. Skipped {len(skipped_files)} file(s).")
+    else:
+        set_progress(100, "ZIP backup complete.")
 
 def create_7z(output_path, items=None):
     items = selected_items if items is None else items
@@ -179,6 +275,7 @@ def create_7z(output_path, items=None):
         seven_zip,
         "a",
         "-t7z",
+        "-ssw",
         output_path
     ] + items
 
@@ -188,7 +285,7 @@ def create_7z(output_path, items=None):
         command,
         check=True,
         creationflags=subprocess.CREATE_NO_WINDOW
-    )     
+    )
 
     set_progress(100, "7Z backup complete.")
 
@@ -206,6 +303,7 @@ def create_rar(output_path, items=None):
     command = [
         rar_exe,
         "a",
+        "-dh",
         output_path
     ] + items
 
@@ -217,7 +315,7 @@ def create_rar(output_path, items=None):
         creationflags=subprocess.CREATE_NO_WINDOW
     )
 
-    set_progress(100, "RAR backup complete.")   
+    set_progress(100, "RAR backup complete.")
 
 def get_file_count_and_size(items=None):
     items = selected_items if items is None else items
@@ -314,6 +412,83 @@ def open_folder_for_path(path):
     except Exception as e:
         messagebox.showerror("Open Location Failed", str(e))
 
+def notify_tray(title, message):
+    if not tray_icon:
+        return
+
+    try:
+        tray_icon.notify(message, title)
+    except Exception:
+        pass
+
+def notify_files_in_use_backup_continuing(locked_files):
+    if not locked_files:
+        return
+
+    file_preview = ", ".join(os.path.basename(file_path) for file_path in locked_files[:5])
+    extra_count = len(locked_files) - 5
+
+    if extra_count > 0:
+        file_preview = f"{file_preview}, and {extra_count} more"
+
+    notify_tray(
+        "Files In Use",
+        f"Backup will continue. Busy files may be skipped: {file_preview}"
+    )
+
+def configure_auto_hide_scrollbar(widget, scrollbar, orient=VERTICAL, geometry="pack", show_options=None):
+    show_options = show_options or {}
+    visible = {"value": False}
+
+    def show_scrollbar():
+        if visible["value"]:
+            return
+
+        if geometry == "grid":
+            scrollbar.grid(**show_options)
+        else:
+            scrollbar.pack(**show_options)
+
+        visible["value"] = True
+
+    def hide_scrollbar():
+        if not visible["value"]:
+            return
+
+        if geometry == "grid":
+            scrollbar.grid_remove()
+        else:
+            scrollbar.pack_forget()
+
+        visible["value"] = False
+
+    def scrollbar_set(first, last):
+        scrollbar.set(first, last)
+
+        try:
+            first_value = float(first)
+            last_value = float(last)
+        except (TypeError, ValueError):
+            show_scrollbar()
+            return
+
+        if first_value <= 0 and last_value >= 1:
+            hide_scrollbar()
+        else:
+            show_scrollbar()
+
+    if orient == HORIZONTAL:
+        widget.configure(xscrollcommand=scrollbar_set)
+        scrollbar.configure(command=widget.xview)
+        view_callback = widget.xview
+    else:
+        widget.configure(yscrollcommand=scrollbar_set)
+        scrollbar.configure(command=widget.yview)
+        view_callback = widget.yview
+
+    hide_scrollbar()
+    widget.after_idle(lambda: scrollbar_set(*view_callback()))
+
 # =========================================================
 # App Settings, Profiles, and Logs
 # =========================================================
@@ -323,9 +498,12 @@ def save_app_settings():
     settings = {
         "last_profile": active_profile_path,
         "destination": destination_var.get(),
+        "manual_backup_destination": manual_backup_destination_var.get(),
+        "auto_backup_destination": auto_backup_destination_var.get(),
         "format": format_var.get(),
         "schedule_times": scheduled_backup_times,
         "cloud_schedule_times": cloud_scheduled_backup_times,
+        "cloud_selected_items": cloud_selected_items,
         "google_drive_folder": google_drive_folder_var.get(),
         "sql_server": sql_server_var.get(),
         "sql_database": sql_database_var.get(),
@@ -346,6 +524,12 @@ def load_app_settings():
             settings = json.load(file)
 
         destination_var.set(settings.get("destination", ""))
+        manual_backup_destination_var.set(
+            settings.get("manual_backup_destination", settings.get("destination", ""))
+        )
+        auto_backup_destination_var.set(
+            settings.get("auto_backup_destination", settings.get("destination", ""))
+        )
         format_var.set(settings.get("format", "zip"))
         sql_server_var.set(settings.get("sql_server", r".\SQLEXPRESS"))
         sql_database_var.set(settings.get("sql_database", "BackupCompressorTest"))
@@ -359,6 +543,10 @@ def load_app_settings():
         cloud_scheduled_backup_times.clear()
         cloud_scheduled_backup_times.extend(settings.get("cloud_schedule_times", []))
         update_cloud_schedule_list()
+
+        cloud_selected_items.clear()
+        cloud_selected_items.extend(settings.get("cloud_selected_items", []))
+        update_cloud_selection_count()
 
         active_profile_path = settings.get("last_profile")
 
@@ -433,17 +621,14 @@ def start_backup(show_messages=True):
     locked_files = get_locked_files(items)
 
     if locked_files:
-        file_preview = "\n".join(locked_files[:10])
-
-        if show_messages:
-            messagebox.showwarning(
-                "Files In Use",
-                f"Backup cannot start because file(s) are currently in use:\n\n{file_preview}\n\nClose the file(s) and try again."
-            )
-        else:
-            write_scheduler_status("Scheduled backup skipped: file(s) in use.")
-
-        return False
+        notify_files_in_use_backup_continuing(locked_files)
+        write_backup_event(
+            "local",
+            "info",
+            f"Backup continuing with {len(locked_files)} file(s) in use.",
+            destination=destination,
+            backup_format=format_choice.upper()
+        )
 
     try:
         set_ui_busy(True)
@@ -593,13 +778,59 @@ def load_backup_events(limit=50):
             except json.JSONDecodeError:
                 pass
 
+    if limit is None:
+        return events
+
     return events[-limit:]
+
+def save_backup_events(events):
+    with open(backup_events_file, "w", encoding="utf-8") as event_file:
+        for event in events:
+            event_file.write(json.dumps(event) + "\n")
+
+def is_dashboard_backup_history_event(event):
+    status = event.get("status", "")
+
+    if status not in ("completed", "failed"):
+        return False
+
+    if event.get("type") == "scheduler":
+        return False
+
+    return bool(event.get("file") or event.get("format") or event.get("destination"))
+
+def event_matches_dashboard_values(event, values):
+    return (
+        event.get("time", "") == values[0]
+        and event.get("type", "") == values[1]
+        and event.get("status", "") == values[2]
+        and event.get("format", "") == values[3]
+        and os.path.basename(event.get("file", "")) == values[4]
+        and event.get("message", "") == values[5]
+        and event.get("file", "") == values[6]
+        and event.get("destination", "") == values[7]
+    )
+
+def get_dashboard_event_key_from_values(values):
+    return tuple(str(value) for value in values)
+
+def get_dashboard_event_key(event):
+    return (
+        event.get("time", ""),
+        event.get("type", ""),
+        event.get("status", ""),
+        event.get("format", ""),
+        os.path.basename(event.get("file", "")),
+        event.get("message", ""),
+        event.get("file", ""),
+        event.get("destination", "")
+    )
 
 def save_profile():
     if not selected_items:
         messagebox.showwarning("No Items", "Add files or folders before saving a profile.")
         return
-        
+
 
     profile_path = filedialog.asksaveasfilename(
         parent=root,
@@ -680,10 +911,13 @@ def view_backup_log():
     text_area.pack(side=LEFT, expand=True, fill=BOTH, padx=(10, 0), pady=10)
 
     scrollbar = Scrollbar(log_window)
-    scrollbar.pack(side=RIGHT, fill=Y, padx=(0, 10), pady=10)
-
-    text_area.config(yscrollcommand=scrollbar.set)
-    scrollbar.config(command=text_area.yview)
+    configure_auto_hide_scrollbar(
+        text_area,
+        scrollbar,
+        VERTICAL,
+        "pack",
+        {"side": RIGHT, "fill": Y, "padx": (0, 10), "pady": 10}
+    )
 
     with open(log_path, "r", encoding="utf-8") as log_file:
         text_area.insert(END, log_file.read())
@@ -709,7 +943,7 @@ def refresh_logs_tab():
     log_text.see(END)
 
 def apply_modern_style():
-    
+
     style = ttk.Style()
     style.theme_use("clam")
 
@@ -831,7 +1065,7 @@ def apply_modern_style():
 # =========================================================
 # Backup Runtime Helpers
 # =========================================================
-    
+
 def set_progress(value, message):
     if threading.get_ident() != ui_thread_id:
         progress_queue.put((value, message))
@@ -898,19 +1132,21 @@ def run_interactive_backup_worker(items, destination, format_choice):
         locked_files = get_locked_files(items)
 
         if locked_files:
-            backup_result_queue.put({
-                "success": False,
-                "locked_files": locked_files,
-                "destination": destination,
-                "format_choice": format_choice
-            })
-            return
+            notify_files_in_use_backup_continuing(locked_files)
+            write_backup_event(
+                "local",
+                "info",
+                f"Backup continuing with {len(locked_files)} file(s) in use.",
+                destination=destination,
+                backup_format=format_choice.upper()
+            )
 
         output = perform_backup(items, destination, format_choice)
 
         backup_result_queue.put({
             "success": True,
             "output": output,
+            "locked_files": locked_files,
             "destination": destination,
             "format_choice": format_choice
         })
@@ -947,14 +1183,6 @@ def finish_interactive_backup(result):
     update_scheduler_indicator_after_backup()
     save_app_settings()
     refresh_logs_tab()
-
-    if result.get("locked_files"):
-        file_preview = "\n".join(result["locked_files"][:10])
-        messagebox.showwarning(
-            "Files In Use",
-            f"Backup cannot start because file(s) are currently in use:\n\n{file_preview}\n\nClose the file(s) and try again."
-        )
-        return
 
     if not result.get("success"):
         messagebox.showerror("Backup Failed", result.get("error", "Unknown backup error."))
@@ -1039,6 +1267,82 @@ def count_backup_files(items=None):
 
     return total
 
+def get_office_backup_roots():
+    home = os.path.expanduser("~")
+    possible_roots = []
+
+    for folder_name in OFFICE_BACKUP_FOLDER_NAMES:
+        possible_roots.append(os.path.join(home, folder_name))
+
+    for env_name in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        one_drive_root = os.getenv(env_name)
+
+        if one_drive_root:
+            for folder_name in ("Desktop", "Documents"):
+                possible_roots.append(os.path.join(one_drive_root, folder_name))
+
+    roots = []
+    seen = set()
+
+    for path in possible_roots:
+        normalized = os.path.normcase(os.path.abspath(path))
+
+        if normalized not in seen and os.path.isdir(path):
+            seen.add(normalized)
+            roots.append(path)
+
+    return roots
+
+def get_office_backup_files():
+    files_to_backup = []
+    seen = set()
+
+    for root_path in get_office_backup_roots():
+        for root_dir, dirs, files in os.walk(root_path):
+            dirs[:] = [
+                folder for folder in dirs
+                if not folder.startswith(".") and folder.lower() not in ("appdata", "node_modules")
+            ]
+
+            for file_name in files:
+                if not file_name.lower().endswith(OFFICE_FILE_EXTENSIONS):
+                    continue
+
+                full_path = os.path.join(root_dir, file_name)
+                normalized = os.path.normcase(os.path.abspath(full_path))
+
+                if normalized not in seen and os.path.isfile(full_path):
+                    seen.add(normalized)
+                    files_to_backup.append(full_path)
+
+    return files_to_backup
+
+def get_schedule_source_items(schedule):
+    if isinstance(schedule, dict) and schedule.get("source") == "office_files":
+        return get_office_backup_files()
+
+    return list(selected_items)
+
+def get_schedule_destination(schedule=None):
+    if isinstance(schedule, dict):
+        scheduled_destination = str(schedule.get("destination") or "").strip()
+
+        if scheduled_destination:
+            return scheduled_destination
+
+        if schedule.get("mode") == "interval":
+            auto_destination = auto_backup_destination_var.get().strip()
+
+            if auto_destination:
+                return auto_destination
+
+        manual_destination = manual_backup_destination_var.get().strip()
+
+        if manual_destination:
+            return manual_destination
+
+    return destination_var.get().strip()
+
 def get_backup_folder_summary():
     destination = destination_var.get().strip()
 
@@ -1067,7 +1371,7 @@ def get_backup_file_paths(destination):
         if file.lower().endswith((".zip", ".7z", ".rar", ".bak"))
     ]
 
-def refresh_dashboard():
+def refresh_dashboard(schedule_next=True):
     dashboard_status_var.set(status_var.get())
     dashboard_progress_var.set(progress_var.get())
     dashboard_schedule_var.set(scheduler_status_var.get())
@@ -1075,19 +1379,18 @@ def refresh_dashboard():
     dashboard_google_var.set(google_drive_status_var.get())
     dashboard_storage_var.set(get_backup_folder_summary())
 
-    destination = destination_var.get().strip()
-    backup_files = get_backup_file_paths(destination)
+    selected_keys = {
+        get_dashboard_event_key_from_values(dashboard_history.item(item_id, "values"))
+        for item_id in dashboard_history.selection()
+    }
 
-    if not backup_files:
-        dashboard_last_backup_var.set("No backup files found")
-        dashboard_history.delete(*dashboard_history.get_children())
+    if selected_keys and schedule_next:
         root.after(1000, refresh_dashboard)
         return
 
-    backup_file_set = set(backup_files)
     events = [
-        event for event in load_backup_events(limit=100)
-        if not event.get("file") or event.get("file") in backup_file_set
+        event for event in load_backup_events(limit=None)
+        if is_dashboard_backup_history_event(event)
     ][-50:]
 
     if events:
@@ -1101,7 +1404,7 @@ def refresh_dashboard():
     dashboard_history.delete(*dashboard_history.get_children())
 
     for event in reversed(events):
-        dashboard_history.insert(
+        item_id = dashboard_history.insert(
             "",
             END,
             values=(
@@ -1116,7 +1419,11 @@ def refresh_dashboard():
             )
         )
 
-    root.after(1000, refresh_dashboard)
+        if get_dashboard_event_key(event) in selected_keys:
+            dashboard_history.selection_add(item_id)
+
+    if schedule_next:
+        root.after(1000, refresh_dashboard)
 
 def open_selected_dashboard_backup(event=None):
     selected = dashboard_history.selection()
@@ -1131,15 +1438,107 @@ def open_selected_dashboard_backup(event=None):
 
     open_folder_for_path(file_path or destination)
 
-def run_backup_silent():
-    destination = destination_var.get().strip()
+def delete_selected_dashboard_history():
+    selected = dashboard_history.selection()
+
+    if not selected:
+        messagebox.showwarning("No Backup Selected", "Select one or more backup history items to delete.")
+        return
+
+    selected_values = [
+        tuple(str(value) for value in dashboard_history.item(item_id, "values"))
+        for item_id in selected
+    ]
+
+    if not messagebox.askyesno(
+        "Delete Backup History",
+        f"Remove {len(selected_values)} selected backup history item(s)?\n\nThis removes the history entries only, not backup files."
+    ):
+        return
+
+    events = load_backup_events(limit=None)
+    remaining_events = []
+    pending_deletes = list(selected_values)
+
+    for event in events:
+        delete_index = None
+
+        for index, values in enumerate(pending_deletes):
+            if is_dashboard_backup_history_event(event) and event_matches_dashboard_values(event, values):
+                delete_index = index
+                break
+
+        if delete_index is None:
+            remaining_events.append(event)
+        else:
+            pending_deletes.pop(delete_index)
+
+    save_backup_events(remaining_events)
+    refresh_logs_tab()
+    refresh_dashboard(schedule_next=False)
+
+def run_scheduled_file_backup(schedule=None):
+    items = get_schedule_source_items(schedule)
+    source_name = "office files" if isinstance(schedule, dict) and schedule.get("source") == "office_files" else "selected files"
+
+    if not items:
+        write_scheduler_status(f"Scheduled backup skipped: no {source_name} found.")
+        return False
+
+    destination = get_schedule_destination(schedule)
+
+    if not destination:
+        write_scheduler_status("Scheduled backup skipped: no destination selected.")
+        return False
+
+    if not os.path.exists(destination):
+        os.makedirs(destination)
+
+    locked_files = get_locked_files(items)
+
+    if locked_files:
+        notify_files_in_use_backup_continuing(locked_files)
+        write_scheduler_status(
+            f"Scheduled backup continuing with {len(locked_files)} file(s) in use."
+        )
+
+    try:
+        set_ui_busy(True)
+        output = perform_backup(items, destination, format_var.get())
+        queue_ui_action(save_app_settings)
+
+        if tray_icon:
+            tray_icon.notify(
+                f"Backup completed: {os.path.basename(output)}",
+                "Backup Compressor"
+            )
+
+        return True
+
+    except Exception as e:
+        write_scheduler_status(f"Scheduled backup failed: {e}")
+        write_backup_event(
+            "local",
+            "failed",
+            str(e),
+            destination=destination,
+            backup_format=format_var.get().upper()
+        )
+        return False
+
+    finally:
+        set_ui_busy(False)
+        queue_ui_action(update_scheduler_indicator_after_backup)
+
+def run_backup_silent(schedule=None):
+    destination = get_schedule_destination(schedule)
 
     before_files = set()
 
     if destination and os.path.exists(destination):
         before_files = set(os.listdir(destination))
 
-    file_backup_success = start_backup(show_messages=False)
+    file_backup_success = run_scheduled_file_backup(schedule)
 
     if sql_include_scheduler_var.get():
         write_scheduler_status("SQL scheduler option is enabled. Starting SQL backup.")
@@ -1294,29 +1693,65 @@ def write_scheduler_status(message):
 # Scheduler and Tray Helpers
 # =========================================================
 
-def check_scheduled_backups():  
-    global last_run_time    
+def check_scheduled_backups():
+    global last_run_time
+
     if scheduler_running:
-        current_time = datetime.now().strftime("%I:%M %p").lstrip("0")
-        today = datetime.now().strftime("%a")
+        now = datetime.now()
+        current_time = now.strftime("%I:%M %p").lstrip("0")
+        today = now.strftime("%a")
 
-        for schedule in scheduled_backup_times:
+        for index, schedule in enumerate(scheduled_backup_times):
+            schedule_key = f"{index}:{json.dumps(schedule, sort_keys=True) if isinstance(schedule, dict) else schedule}"
+
             if isinstance(schedule, dict):
-                schedule_time = schedule.get("time")
+                schedule_mode = schedule.get("mode", "time")
                 schedule_days = schedule.get("days", [])
-                should_run = current_time == schedule_time and today in schedule_days
-            else:
-                should_run = current_time == schedule and selected_days[today].get()
 
-            if should_run and current_time != last_run_time:
+                if today not in schedule_days:
+                    should_run = False
+                elif schedule_mode == "interval":
+                    try:
+                        interval_minutes = int(schedule.get("interval_minutes", 10))
+                    except (TypeError, ValueError):
+                        interval_minutes = 10
+
+                    last_run = schedule_last_run_times.get(schedule_key)
+                    should_run = not last_run or (now - last_run).total_seconds() >= interval_minutes * 60
+                else:
+                    schedule_time = schedule.get("time")
+                    last_run = schedule_last_run_times.get(schedule_key)
+                    should_run = (
+                        current_time == schedule_time
+                        and last_run != now.strftime("%Y-%m-%d %I:%M %p")
+                    )
+            else:
+                should_run = (
+                    current_time == schedule
+                    and selected_days[today].get()
+                    and current_time != last_run_time
+                )
+
+            if should_run:
                 last_run_time = current_time
+
+                if isinstance(schedule, dict) and schedule.get("mode") == "interval":
+                    schedule_last_run_times[schedule_key] = now
+                elif isinstance(schedule, dict):
+                    schedule_last_run_times[schedule_key] = now.strftime("%Y-%m-%d %I:%M %p")
+
                 scheduler_status_var.set("Running Backup")
                 status_label.config(image=icon_blue)
                 update_tray_icon(LOCAL_SCHEDULE_COLOR)
-                write_scheduler_status(f"Scheduled backup started at {current_time}")
 
-                backup_thread = threading.Thread(target=run_backup_silent)
-                backup_thread.daemon = True
+                schedule_name = schedule.get("name", "Local Backup") if isinstance(schedule, dict) else "Local Backup"
+                write_scheduler_status(f"Scheduled backup started: {schedule_name}")
+
+                backup_thread = threading.Thread(
+                    target=run_backup_silent,
+                    args=(schedule if isinstance(schedule, dict) else None,),
+                    daemon=True
+                )
                 backup_thread.start()
                 break
 
@@ -1412,11 +1847,19 @@ def update_schedule_list():
     for schedule in scheduled_backup_times:
         if isinstance(schedule, dict):
             name = schedule.get("name", "Local Backup")
-            time = schedule.get("time", "")
+            category = "Auto" if schedule.get("mode") == "interval" else "Manual"
+            source = "Office files" if schedule.get("source") == "office_files" else "Selected items"
             description = schedule.get("description", "")
+            destination = str(schedule.get("destination") or "").strip()
+            destination_name = os.path.basename(os.path.normpath(destination)) if destination else "Default location"
             days = ", ".join(schedule.get("days", []))
 
-            display_text = f"{name} | {time} | {description} | {days}"
+            if schedule.get("mode") == "interval":
+                timing = f"Every {schedule.get('interval_minutes', 10)} min"
+            else:
+                timing = schedule.get("time", "")
+
+            display_text = f"{category} | {name} | {timing} | {source} | {destination_name} | {description} | {days}"
             schedule_listbox.insert(END, display_text)
         else:
             # old saved schedules support
@@ -1426,14 +1869,28 @@ def add_backup_time():
     hour = hours_var.get()
     minute = minutes_var.get()
     ampm = ampm_var.get()
+    selected_schedule_days = [day for day, var in selected_days.items() if var.get()]
+
+    if not selected_schedule_days:
+        messagebox.showwarning("No Days Selected", "Select at least one backup day.")
+        return
 
     backup_time = f"{int(hour)}:{minute} {ampm}"
+    uses_office_files = office_schedule_var.get()
+    destination = manual_backup_destination_var.get().strip() or destination_var.get().strip()
+
+    if not destination:
+        messagebox.showwarning("No Manual Destination", "Choose a manual backup location first.")
+        return
 
     new_schedule = {
-        "name": schedule_name_var.get().strip() or "Local Backup",
+        "name": schedule_name_var.get().strip() or ("Office Files Backup" if uses_office_files else "Local Backup"),
+        "mode": "time",
+        "source": "office_files" if uses_office_files else "selected_items",
         "time": backup_time,
+        "destination": destination,
         "description": schedule_description_var.get().strip() or "No description",
-        "days": [day for day, var in selected_days.items() if var.get()]
+        "days": selected_schedule_days
     }
 
     scheduled_backup_times.append(new_schedule)
@@ -1444,7 +1901,49 @@ def add_backup_time():
     write_scheduler_status(
         f"Backup schedule added: {new_schedule['name']} at {backup_time}"
     )
-        
+
+def add_office_auto_backup_schedule():
+    selected_schedule_days = [day for day, var in selected_days.items() if var.get()]
+
+    if not selected_schedule_days:
+        messagebox.showwarning("No Days Selected", "Select at least one backup day.")
+        return
+
+    try:
+        interval_minutes = int(auto_backup_interval_var.get())
+    except ValueError:
+        messagebox.showwarning("Invalid Interval", "Enter a whole number of minutes.")
+        return
+
+    if interval_minutes < 1:
+        messagebox.showwarning("Invalid Interval", "Interval must be at least 1 minute.")
+        return
+
+    destination = auto_backup_destination_var.get().strip() or destination_var.get().strip()
+
+    if not destination:
+        messagebox.showwarning("No Auto Destination", "Choose an auto backup location first.")
+        return
+
+    new_schedule = {
+        "name": schedule_name_var.get().strip() or "Office Auto Backup",
+        "mode": "interval",
+        "source": "office_files",
+        "interval_minutes": interval_minutes,
+        "destination": destination,
+        "description": "Common office files from Desktop, Documents, Downloads, and OneDrive",
+        "days": selected_schedule_days
+    }
+
+    scheduled_backup_times.append(new_schedule)
+
+    update_schedule_list()
+    save_app_settings()
+
+    write_scheduler_status(
+        f"Office auto backup schedule added: every {interval_minutes} minute(s)"
+    )
+
 def remove_selected_time():
     selected = schedule_listbox.curselection()
 
@@ -1493,7 +1992,7 @@ def start_scheduler():  # start
     scheduler_status_var.set("Running")   # when started
     status_label.config(image=icon_blue)
     refresh_schedule_tray_icon()
-    
+
     write_scheduler_status("Scheduler started")
 
 def create_tray_image(color=STOPPED_COLOR):
@@ -1510,14 +2009,14 @@ def create_tray_image(color=STOPPED_COLOR):
         width=2
     )
 
-    return image    
+    return image
 
 def stop_scheduler():   # stopped
     global scheduler_running
 
     scheduler_running = False
-    
-    scheduler_status_var.set("Stopped")   
+
+    scheduler_status_var.set("Stopped")
     status_label.config(image=icon_red)
     refresh_schedule_tray_icon()
 
@@ -1655,7 +2154,7 @@ def discover_sql_servers():
                 state=NORMAL
             )
         )
-    
+
 def start_sql_server_discovery():
     btn_find_servers.config(
         text="Searching...",
@@ -1787,7 +2286,7 @@ def configure_main_window():
     y = max(0, int((screen_height - window_height) / 2))
 
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-    root.minsize(1000, 760)
+    root.minsize(900, 640)
 
 def backup_mysql_database(host, user, password, database, output_file):
     command = [
@@ -1917,7 +2416,7 @@ def load_sql_databases():
             line.strip()
             for line in result.stdout.splitlines()
             if line.strip()
-        ]   
+        ]
 
         if not database_names:
             messagebox.showinfo("SQL Databases", "No user databases found.")
@@ -1955,7 +2454,13 @@ def show_database_selection_window(database_names):
     checkbox_frame = ttk.Frame(canvas, style="Card.TFrame")
 
     canvas.create_window((0, 0), window=checkbox_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
+    configure_auto_hide_scrollbar(
+        canvas,
+        scrollbar,
+        VERTICAL,
+        "pack",
+        {"side": RIGHT, "fill": Y}
+    )
 
     def scroll_database_list(event):
         if canvas.winfo_exists():
@@ -1974,11 +2479,6 @@ def show_database_selection_window(database_names):
     )
 
     canvas.pack(side=LEFT, fill=BOTH, expand=True)
-
-    if len(database_names) > 10:
-        scrollbar.pack(side=RIGHT, fill=Y)
-    else:
-        scrollbar.pack_forget()
 
     temp_vars = {}
 
@@ -2058,7 +2558,7 @@ def show_database_selection_window(database_names):
 # =========================================================
 # Google Drive Backup
 # =========================================================
-    
+
 def connect_google_drive():
     global google_drive_service
 
@@ -2095,8 +2595,8 @@ def connect_google_drive():
     messagebox.showinfo(
         "Google Drive",
         "Google Drive connected successfully."
-    )    
-    
+    )
+
 def upload_file_to_google_drive(file_path):
     global google_drive_service
 
@@ -2158,7 +2658,7 @@ def get_google_drive_account_email():
 
     except Exception:
         return "Connected Google account"
-        
+
 def upload_test_to_google_drive():
     test_file = os.path.join(app_data_folder, "google_drive_test.txt")
 
@@ -2197,7 +2697,7 @@ def upload_latest_backup_to_google_drive():
     except Exception as e:
         write_scheduler_status(f"Google Drive upload failed: {e}")
         return False
-    
+
 def disconnect_google_drive():
     global google_drive_service
 
@@ -2321,6 +2821,7 @@ def add_cloud_backup_items():
             cloud_selected_items.extend(files)
 
         update_cloud_selection_count()
+        save_app_settings()
         selection_window.destroy()
 
     def select_folder():
@@ -2330,6 +2831,7 @@ def add_cloud_backup_items():
             cloud_selected_items.append(folder)
 
         update_cloud_selection_count()
+        save_app_settings()
         selection_window.destroy()
 
     ttk.Button(
@@ -2402,6 +2904,27 @@ def remove_cloud_backup_time():
     update_cloud_schedule_list()
     save_app_settings()
 
+def remove_selected_cloud_items():
+    selected = list(cloud_items_listbox.curselection())
+
+    if not selected:
+        messagebox.showwarning("No Items Selected", "Select one or more cloud backup items to remove.")
+        return
+
+    for index in reversed(selected):
+        cloud_selected_items.pop(index)
+
+    update_cloud_selection_count()
+    save_app_settings()
+
+def clear_cloud_items():
+    if not cloud_selected_items:
+        return
+
+    cloud_selected_items.clear()
+    update_cloud_selection_count()
+    save_app_settings()
+
 def start_cloud_scheduler():
     global cloud_scheduler_running
 
@@ -2428,8 +2951,287 @@ def stop_cloud_scheduler():
     refresh_schedule_tray_icon()
 
 def update_cloud_selection_count():
+    if "cloud_items_listbox" in globals():
+        cloud_items_listbox.delete(0, END)
+
+        for item in cloud_selected_items:
+            cloud_items_listbox.insert(END, item)
+
     cloud_selected_count_var.set(
         f"{len(cloud_selected_items)} cloud item(s) selected"
+    )
+
+def update_office_preset_caption():
+    if office_schedule_var.get():
+        office_preset_caption_var.set(
+            "Office preset saves Word, Excel, PowerPoint, PDF, text/CSV/RTF, OneNote, and Outlook files from Desktop, Documents, Downloads, and OneDrive."
+        )
+    else:
+        office_preset_caption_var.set("")
+
+def refresh_scheduler_sections():
+    if "scheduler_paned" not in globals():
+        return
+
+    for pane in scheduler_paned.panes():
+        scheduler_paned.forget(pane)
+
+    min_sizes = {
+        "manual": 360,
+        "auto": 300
+    }
+
+    for section_key in scheduler_section_order:
+        section = scheduler_section_widgets.get(section_key)
+
+        if section:
+            scheduler_paned.add(section, minsize=min_sizes.get(section_key, 100))
+
+    update_scheduler_scroll_region()
+
+def update_scheduler_scroll_region(event=None):
+    if "scheduler_canvas" not in globals():
+        return
+
+    scheduler_canvas.update_idletasks()
+    scroll_region = scheduler_canvas.bbox("all")
+    scheduler_canvas.configure(scrollregion=scroll_region)
+
+    canvas_width = scheduler_canvas.winfo_width()
+    canvas_height = scheduler_canvas.winfo_height()
+    content_width = max(canvas_width, scheduler_content.winfo_reqwidth(), 940)
+    scheduler_canvas.itemconfigure(scheduler_content_window, width=content_width)
+
+    if scroll_region:
+        _, _, scroll_width, scroll_height = scroll_region
+        horizontal_needed = scroll_width > canvas_width + 2
+        vertical_needed = scroll_height > canvas_height + 2
+    else:
+        horizontal_needed = False
+        vertical_needed = False
+
+    if vertical_needed:
+        scheduler_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+    else:
+        scheduler_vertical_scrollbar.grid_remove()
+
+    if horizontal_needed:
+        scheduler_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+    else:
+        scheduler_horizontal_scrollbar.grid_remove()
+
+def scroll_scheduler_canvas(event):
+    if "scheduler_canvas" not in globals():
+        return
+
+    scheduler_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+def bind_scheduler_mousewheel(event=None):
+    if "scheduler_canvas" in globals():
+        scheduler_canvas.bind_all("<MouseWheel>", scroll_scheduler_canvas)
+
+def unbind_scheduler_mousewheel(event=None):
+    if "scheduler_canvas" in globals():
+        scheduler_canvas.unbind_all("<MouseWheel>")
+
+def create_scheduler_section_header(parent, section_key, title):
+    header = ttk.Frame(parent, style="Card.TFrame")
+    header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    header.columnconfigure(0, weight=1)
+
+    ttk.Label(
+        header,
+        text=title,
+        background=CARD,
+        foreground=TEXT,
+        font=("Segoe UI", 12, "bold")
+    ).grid(row=0, column=0, sticky="w")
+
+    return header
+
+def refresh_cloud_sections():
+    if "cloud_top_split" not in globals() or "cloud_bottom_split" not in globals():
+        return
+
+    for pane in cloud_top_split.panes():
+        cloud_top_split.forget(pane)
+
+    for pane in cloud_bottom_split.panes():
+        cloud_bottom_split.forget(pane)
+
+    min_sizes = {
+        "cloud_items": 320,
+        "google_drive": 300,
+        "sql": 320,
+        "cloud_schedule": 360
+    }
+
+    for index, section_key in enumerate(cloud_section_order):
+        section = cloud_section_widgets.get(section_key)
+
+        if not section:
+            continue
+
+        target_split = cloud_top_split if index < 2 else cloud_bottom_split
+        target_split.add(section, minsize=min_sizes.get(section_key, 260))
+
+def move_cloud_section(section_key, direction):
+    if section_key not in cloud_section_order:
+        return
+
+    current_index = cloud_section_order.index(section_key)
+    new_index = current_index + direction
+
+    if new_index < 0 or new_index >= len(cloud_section_order):
+        return
+
+    cloud_section_order[current_index], cloud_section_order[new_index] = (
+        cloud_section_order[new_index],
+        cloud_section_order[current_index]
+    )
+    refresh_cloud_sections()
+
+def create_cloud_section_header(parent, section_key, title, manager="grid", columnspan=3):
+    header = ttk.Frame(parent, style="Card.TFrame")
+    header.columnconfigure(0, weight=1)
+
+    if manager == "pack":
+        header.pack(fill=X, pady=(0, 10))
+    else:
+        header.grid(row=0, column=0, columnspan=columnspan, sticky="ew", pady=(0, 10))
+
+    ttk.Label(
+        header,
+        text=title,
+        background=CARD,
+        foreground=TEXT,
+        font=("Segoe UI", 12, "bold")
+    ).grid(row=0, column=0, sticky="w")
+
+#    ttk.Button(
+#        header,
+#        text="Move Up",
+#        width=10,
+#       command=lambda: move_cloud_section(section_key, -1)
+#    ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+#    ttk.Button(
+#        header,
+#        text="Move Down",
+#        width=11,
+#        command=lambda: move_cloud_section(section_key, 1)
+#    ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+    return header
+
+def update_dashboard_card_layout(event=None):
+    if "dashboard_top_row" not in globals():
+        return
+
+    width = dashboard_top_row.winfo_width()
+
+    for card in (dashboard_status_card, dashboard_schedule_card, dashboard_cloud_card):
+        card.grid_forget()
+
+    if width < 900:
+        for index, card in enumerate((dashboard_status_card, dashboard_schedule_card, dashboard_cloud_card)):
+            card.grid(row=index, column=0, sticky="ew", pady=(0, 8))
+
+        dashboard_top_row.columnconfigure(0, weight=1)
+        dashboard_top_row.columnconfigure(1, weight=0)
+        dashboard_top_row.columnconfigure(2, weight=0)
+    else:
+        dashboard_status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        dashboard_schedule_card.grid(row=0, column=1, sticky="nsew", padx=8)
+        dashboard_cloud_card.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
+
+        for column in range(3):
+            dashboard_top_row.columnconfigure(column, weight=1)
+
+def update_cloud_schedule_layout(event=None):
+    if "cloud_schedule_card" not in globals() or "cloud_schedule_listbox" not in globals():
+        return
+
+    width = cloud_schedule_card.winfo_width()
+
+    if width < 950:
+        cloud_schedule_listbox.grid(
+            row=6,
+            column=0,
+            columnspan=4,
+            sticky="ew",
+            padx=(0, 0),
+            pady=(12, 0)
+        )
+    else:
+        cloud_schedule_listbox.grid(
+            row=1,
+            column=4,
+            rowspan=5,
+            sticky="nw",
+            padx=(20, 0),
+            pady=(0, 0)
+        )
+
+def arrange_responsive_button_grid(frame, buttons, columns):
+    columns = max(1, columns)
+
+    for child in frame.winfo_children():
+        child.pack_forget()
+        child.grid_forget()
+
+    for index, button in enumerate(buttons):
+        row = index // columns
+        column = index % columns
+        padx = (0, 8) if column < columns - 1 else (0, 0)
+        pady = (0, 8) if row < (len(buttons) - 1) // columns else (0, 0)
+        button.grid(row=row, column=column, sticky="ew", padx=padx, pady=pady)
+
+    for column in range(columns):
+        frame.columnconfigure(column, weight=1, minsize=120)
+
+def update_backup_tab_layout(event=None):
+    if "button_row" not in globals() or "btn_clear_list" not in globals():
+        return
+
+    width = button_row.winfo_width()
+    arrange_responsive_button_grid(
+        button_row,
+        [btn_add_files, btn_add_folder, btn_clear_list],
+        1 if width < 430 else 3
+    )
+
+def update_cloud_items_layout(event=None):
+    if "cloud_items_button_row" not in globals() or "btn_clear_cloud_items" not in globals():
+        return
+
+    width = cloud_items_button_row.winfo_width()
+    arrange_responsive_button_grid(
+        cloud_items_button_row,
+        [btn_select_cloud_items, btn_remove_cloud_items, btn_clear_cloud_items],
+        1 if width < 430 else 3
+    )
+
+def update_sql_card_layout(event=None):
+    if "sql_button_row" not in globals() or "btn_load_databases" not in globals():
+        return
+
+    width = sql_button_row.winfo_width()
+    arrange_responsive_button_grid(
+        sql_button_row,
+        [btn_find_servers, btn_test_sql, btn_load_databases],
+        1 if width < 470 else 3
+    )
+
+def update_google_drive_layout(event=None):
+    if "google_drive_button_row" not in globals() or "btn_disconnect_google" not in globals():
+        return
+
+    width = google_drive_button_row.winfo_width()
+    arrange_responsive_button_grid(
+        google_drive_button_row,
+        [btn_connect_google, btn_test_google, btn_disconnect_google],
+        1 if width < 430 else 3
     )
 
 def check_cloud_scheduled_backups():
@@ -2468,7 +3270,10 @@ def check_cloud_scheduled_backups():
 # Tkinter App Bootstrap
 # =========================================================
 
-root = Tk() 
+relaunch_as_admin_if_needed()
+hide_console_window()
+
+root = Tk()
 google_drive_service = None
 configure_dialog_parents(root)
 
@@ -2502,8 +3307,10 @@ configure_main_window()
 
 
 # Tkinter variables shared by callbacks and UI widgets.
-apply_modern_style()    
+apply_modern_style()
 destination_var = StringVar()
+manual_backup_destination_var = StringVar()
+auto_backup_destination_var = StringVar()
 format_var = StringVar(value="zip")
 sql_server_var = StringVar(value=r".\SQLEXPRESS")
 sql_database_var = StringVar(value="BackupCompressorTest")
@@ -2530,6 +3337,9 @@ schedule_time_var = StringVar()
 scheduler_status_var = StringVar(value="Stopped")
 schedule_name_var = StringVar(value="Local Backup")
 schedule_description_var = StringVar(value="Files/Folders backup")
+office_schedule_var = BooleanVar(value=False)
+office_preset_caption_var = StringVar(value="")
+auto_backup_interval_var = StringVar(value="10")
 
 progress_var = DoubleVar(value=0)
 status_var = StringVar(value="Ready")
@@ -2571,6 +3381,7 @@ dashboard_top_row.pack(fill=X, pady=(0, 10))
 dashboard_top_row.columnconfigure(0, weight=1)
 dashboard_top_row.columnconfigure(1, weight=1)
 dashboard_top_row.columnconfigure(2, weight=1)
+dashboard_top_row.bind("<Configure>", update_dashboard_card_layout)
 
 dashboard_status_card = ttk.Frame(dashboard_top_row, style="Card.TFrame", padding=15)
 dashboard_status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
@@ -2683,7 +3494,8 @@ dashboard_history = ttk.Treeview(
     dashboard_history_frame,
     columns=("time", "type", "status", "format", "file", "message", "path", "destination"),
     show="headings",
-    height=12
+    height=12,
+    selectmode="extended"
 )
 
 for column, heading, width_value in (
@@ -2710,8 +3522,13 @@ dashboard_history_scrollbar = ttk.Scrollbar(
     orient="vertical",
     command=dashboard_history.yview
 )
-dashboard_history_scrollbar.pack(side=RIGHT, fill=Y)
-dashboard_history.configure(yscrollcommand=dashboard_history_scrollbar.set)
+configure_auto_hide_scrollbar(
+    dashboard_history,
+    dashboard_history_scrollbar,
+    VERTICAL,
+    "pack",
+    {"side": RIGHT, "fill": Y}
+)
 
 dashboard_history_button_row = ttk.Frame(dashboard_history_card, style="Card.TFrame")
 dashboard_history_button_row.pack(fill=X, pady=(10, 0))
@@ -2723,14 +3540,26 @@ btn_open_dashboard_backup = ttk.Button(
     command=open_selected_dashboard_backup
 )
 btn_open_dashboard_backup.pack(side=LEFT)
-main_buttons.append(btn_open_dashboard_backup)
+
+btn_delete_dashboard_history = ttk.Button(
+    dashboard_history_button_row,
+    text="Delete Selected",
+    width=BTN_WIDTH,
+    command=delete_selected_dashboard_history
+)
+btn_delete_dashboard_history.pack(side=LEFT, padx=(8, 0))
+
+main_buttons.extend([
+    btn_open_dashboard_backup,
+    btn_delete_dashboard_history
+])
 
 # =========================================================
 # Logs Tab
 # =========================================================
 
 logs_card = ttk.Frame(logs_tab, style="Card.TFrame", padding=15)
-logs_card.pack(fill=BOTH, expand=True)  
+logs_card.pack(fill=BOTH, expand=True)
 
 ttk.Label(
     logs_card,
@@ -2753,10 +3582,13 @@ log_text.pack(side=LEFT, fill=BOTH, expand=True)
 log_text.config(state=DISABLED)
 
 log_scrollbar = Scrollbar(logs_card)
-log_scrollbar.pack(side=RIGHT, fill=Y)
-
-log_text.config(yscrollcommand=log_scrollbar.set)
-log_scrollbar.config(command=log_text.yview)
+configure_auto_hide_scrollbar(
+    log_text,
+    log_scrollbar,
+    VERTICAL,
+    "pack",
+    {"side": RIGHT, "fill": Y}
+)
 
 logs_button_row = ttk.Frame(logs_tab)
 logs_button_row.pack(fill=X, pady=(10, 0))
@@ -2767,61 +3599,200 @@ btn_view_log.pack(side=LEFT)
 main_buttons.append(btn_view_log)
 
 # =========================================================
+# Cloud Backup Tab: File Selection
+# =========================================================
+
+cloud_vertical_split = PanedWindow(
+    settings_tab,
+    orient=VERTICAL,
+    bg=BG,
+    bd=0,
+    sashwidth=8,
+    sashrelief=FLAT,
+    showhandle=False
+)
+cloud_vertical_split.pack(fill=BOTH, expand=True)
+
+cloud_top_split = PanedWindow(
+    cloud_vertical_split,
+    orient=HORIZONTAL,
+    bg=BG,
+    bd=0,
+    sashwidth=8,
+    sashrelief=FLAT,
+    showhandle=False
+)
+
+cloud_bottom_split = PanedWindow(
+    cloud_vertical_split,
+    orient=HORIZONTAL,
+    bg=BG,
+    bd=0,
+    sashwidth=8,
+    sashrelief=FLAT,
+    showhandle=False
+)
+
+cloud_vertical_split.add(cloud_top_split, minsize=220)
+cloud_vertical_split.add(cloud_bottom_split, minsize=260)
+
+cloud_files_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+
+create_cloud_section_header(
+    cloud_files_card,
+    "cloud_items",
+    "Selected Cloud Backup Items",
+    manager="pack"
+)
+
+cloud_items_button_row = ttk.Frame(cloud_files_card, style="Card.TFrame")
+cloud_items_button_row.pack(fill=X, pady=(0, 10))
+cloud_items_button_row.bind("<Configure>", update_cloud_items_layout)
+
+btn_select_cloud_items = ttk.Button(
+    cloud_items_button_row,
+    text="Add Cloud Items",
+    command=add_cloud_backup_items
+)
+
+btn_remove_cloud_items = ttk.Button(
+    cloud_items_button_row,
+    text="Remove Selected",
+    command=remove_selected_cloud_items
+)
+
+btn_clear_cloud_items = ttk.Button(
+    cloud_items_button_row,
+    text="Clear List",
+    command=clear_cloud_items
+)
+
+cloud_items_list_frame = Frame(cloud_files_card, bg=CARD)
+cloud_items_list_frame.pack(fill=BOTH, expand=True)
+
+cloud_items_listbox = Listbox(
+    cloud_items_list_frame,
+    bg="#1f1f1f",
+    fg="#ffffff",
+    selectbackground="#0078d4",
+    selectforeground="#ffffff",
+    font=("Segoe UI", 10),
+    relief=FLAT,
+    height=6,
+    selectmode=EXTENDED
+)
+cloud_items_listbox.pack(side=LEFT, fill=BOTH, expand=True)
+
+cloud_items_scrollbar = Scrollbar(cloud_items_list_frame)
+configure_auto_hide_scrollbar(
+    cloud_items_listbox,
+    cloud_items_scrollbar,
+    VERTICAL,
+    "pack",
+    {"side": RIGHT, "fill": Y}
+)
+
+cloud_selected_count_label = ttk.Label(
+    cloud_files_card,
+    textvariable=cloud_selected_count_var,
+    background=CARD,
+    foreground=MUTED
+)
+cloud_selected_count_label.pack(anchor="w", pady=(8, 0))
+
+main_buttons.extend([
+    btn_select_cloud_items,
+    btn_remove_cloud_items,
+    btn_clear_cloud_items
+])
+
+# =========================================================
+# Cloud Backup Tab: Google Drive Location
+# =========================================================
+
+google_drive_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+google_drive_card.columnconfigure(1, weight=1)
+
+create_cloud_section_header(
+    google_drive_card,
+    "google_drive",
+    "Google Drive Backup Location",
+    columnspan=3
+)
+
+google_drive_folder_label = ttk.Label(
+    google_drive_card,
+    text="Cloud Folder:",
+    background=CARD,
+    foreground=TEXT
+)
+google_drive_folder_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
+
+google_drive_folder_entry = ttk.Entry(
+    google_drive_card,
+    textvariable=google_drive_folder_var
+)
+google_drive_folder_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=5)
+
+google_drive_status_label = ttk.Label(
+    google_drive_card,
+    textvariable=google_drive_status_var,
+    background=CARD,
+    foreground="#57f287",
+    font=("Segoe UI", 9, "bold")
+)
+google_drive_status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+google_drive_button_row = ttk.Frame(google_drive_card, style="Card.TFrame")
+google_drive_button_row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+google_drive_button_row.bind("<Configure>", update_google_drive_layout)
+
+btn_connect_google = ttk.Button(
+    google_drive_button_row,
+    text="Google Drive",
+    command=connect_google_drive
+)
+
+btn_test_google = ttk.Button(
+    google_drive_button_row,
+    text="Upload Test",
+    command=upload_test_to_google_drive
+)
+
+btn_disconnect_google = ttk.Button(
+    google_drive_button_row,
+    text="Disconnect",
+    command=disconnect_google_drive
+)
+
+main_buttons.extend([
+    btn_connect_google,
+    btn_test_google,
+    btn_disconnect_google
+])
+
+# =========================================================
 # Cloud Backup Tab: SQL Settings
 # =========================================================
 
 sql_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
-sql_card.pack(fill=X, pady=10)
+sql_card.columnconfigure(1, weight=1)
 
-ttk.Label(
+create_cloud_section_header(
     sql_card,
-    text="SQL Backup Settings",
-    background=CARD,
-    foreground=TEXT,
-    font=("Segoe UI", 12, "bold")
-).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+    "sql",
+    "SQL Backup Settings",
+    columnspan=3
+)
 
 ttk.Label(sql_card, text="Server:", background=CARD, foreground=TEXT).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
 
 sql_server_entry = ttk.Entry(sql_card, textvariable=sql_server_var, width=30)
-sql_server_entry.grid(row=1, column=1, sticky="w", pady=5)
-
-ttk.Label(
-    sql_card,
-    textvariable=sql_selected_count_var,
-    background=CARD,
-    foreground="#57f287",
-    font=("Segoe UI", 9)
-).grid(
-    row=5,
-    column=0,
-    columnspan=3,
-    sticky="w",
-    pady=(4, 2)
-)
-
-ttk.Label(
-    sql_card,
-    text="If finding SQL Servers takes too long, type the server name above and press Enter. Always test the connection.",
-    background=CARD,
-    foreground="#ffb86c",
-    font=("Segoe UI", 9, "bold")
-).grid(
-    row=6,
-    column=0,
-    columnspan=3,
-    sticky="w",
-    pady=(0, 8)
-)
+sql_server_entry.grid(row=1, column=1, sticky="ew", pady=5)
 
 sql_button_row = ttk.Frame(sql_card, style="Card.TFrame")
-sql_button_row.grid(
-    row=4,
-    column=0,
-    columnspan=3,
-    sticky="w", 
-    pady=5
-)
+sql_button_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+sql_button_row.bind("<Configure>", update_sql_card_layout)
 
 btn_find_servers = ttk.Button(
     sql_button_row,
@@ -2844,9 +3815,23 @@ btn_load_databases = ttk.Button(
     command=load_sql_databases
 )
 
-btn_find_servers.pack(side=LEFT, padx=(0, 8))
-btn_test_sql.pack(side=LEFT, padx=(0, 8))
-btn_load_databases.pack(side=LEFT)
+ttk.Label(
+    sql_card,
+    textvariable=sql_selected_count_var,
+    background=CARD,
+    foreground="#57f287",
+    font=("Segoe UI", 9)
+).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
+
+ttk.Label(
+    sql_card,
+    text="If finding SQL Servers takes too long, type the server name above and press Enter. Always test the connection.",
+    background=CARD,
+    foreground="#ffb86c",
+    font=("Segoe UI", 9, "bold"),
+    wraplength=760,
+    justify=LEFT
+).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
 main_buttons.extend([
     btn_find_servers,
@@ -2859,15 +3844,19 @@ main_buttons.extend([
 # =========================================================
 
 cloud_schedule_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
-cloud_schedule_card.pack(fill=X, pady=10)
+cloud_schedule_card.columnconfigure(0, weight=0)
+cloud_schedule_card.columnconfigure(1, weight=0)
+cloud_schedule_card.columnconfigure(2, weight=0)
+cloud_schedule_card.columnconfigure(3, weight=0)
+cloud_schedule_card.columnconfigure(4, weight=1)
+cloud_schedule_card.bind("<Configure>", update_cloud_schedule_layout)
 
-ttk.Label(
+create_cloud_section_header(
     cloud_schedule_card,
-    text="Cloud Backup Scheduler",
-    background=CARD,
-    foreground=TEXT,
-    font=("Segoe UI", 12, "bold")
-).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+    "cloud_schedule",
+    "Cloud Backup Scheduler",
+    columnspan=5
+)
 
 cloud_time_row = ttk.Frame(cloud_schedule_card, style="Card.TFrame")
 cloud_time_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
@@ -2963,135 +3952,39 @@ ttk.Label(
     font=("Segoe UI", 9, "bold")
 ).grid(row=5, column=2, sticky="w", padx=(10, 0), pady=(10, 0))
 
+main_buttons.extend([
+    btn_add_cloud_time,
+    btn_remove_cloud_time,
+    btn_start_cloud_scheduler,
+    btn_stop_cloud_scheduler
+])
+
+cloud_section_widgets.update({
+    "cloud_items": cloud_files_card,
+    "google_drive": google_drive_card,
+    "sql": sql_card,
+    "cloud_schedule": cloud_schedule_card
+})
+refresh_cloud_sections()
+
 # =========================================================
-# Cloud Backup Tab: Google Drive Settings
+# Cloud Backup Tab: Actions
 # =========================================================
 
-google_drive_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
-google_drive_card.pack(fill=X, pady=10)
-google_drive_card.columnconfigure(4, weight=1)
+cloud_action_row = ttk.Frame(settings_tab)
+cloud_action_row.pack(fill=X, pady=15)
+cloud_action_row.columnconfigure(0, weight=1)
 
-ttk.Label(
-    google_drive_card,
-    text="Google Drive Backup Settings",
-    background=CARD,
-    foreground=TEXT,
-    font=("Segoe UI", 12, "bold")
-).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-
-btn_connect_google = ttk.Button(
-    google_drive_card,
-    text="Google Drive",
-    width=BTN_WIDTH,
-    command=connect_google_drive
-)
-btn_connect_google.grid(
-    row=1,
-    column=0,
-    sticky="w",
-    padx=(0, 8),
-    pady=5
-)   
-btn_test_google = ttk.Button(
-    google_drive_card,
-    text="Upload Test",
-    width=BTN_WIDTH,
-    command=upload_test_to_google_drive
-)
-btn_test_google.grid(
-    row=1,
-    column=1,
-    sticky="w",
-    padx=(0, 8),
-    pady=5
-)
-
-btn_disconnect_google = ttk.Button(
-    google_drive_card,
-    text="Disconnect",
-    width=BTN_WIDTH,
-    command=disconnect_google_drive
-)
-
-btn_select_cloud_items = ttk.Button(
-    google_drive_card,
-    text="Select Cloud Items",
-    width=BTN_WIDTH,
-    command=add_cloud_backup_items
-)
-
-btn_select_cloud_items.grid(row=1, column=2, sticky="w", padx=(0, 8), pady=5)
-
-btn_disconnect_google.grid(row=1, column=3, sticky="w", padx=(0, 8), pady=5)
-
-ttk.Label(
-    google_drive_card,
-    textvariable=cloud_selected_count_var,
-    background=CARD,
-    foreground="#57f287",
-    font=("Segoe UI", 9, "bold")
-).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
-
-# Google Drive connection status.
-ttk.Label(
-    google_drive_card,
-    textvariable=google_drive_status_var,
-    background=CARD,
-    foreground="#57f287",
-    font=("Segoe UI", 10, "bold")
-).grid(
-    row=2,
-    column=0,
-    columnspan=3,
-    sticky="w",
-    pady=(8, 8)
-)
-
-# Folder name used when creating or finding the destination in Google Drive.
-ttk.Entry(
-    google_drive_card,
-    textvariable=google_drive_folder_var,
-    width=40
-).grid(
-    row=4,
-    column=1,
-    columnspan=2,
-    sticky="w",
-    padx=(8, 0),
-    pady=(5, 5)
-)
 btn_start_cloud_schedule = ttk.Button(
-    google_drive_card,
+    cloud_action_row,
     text="Start Local + Cloud Schedule",
     width=BTN_WIDTH + 10,
     command=start_cloud_backup_schedule,
     style="Accent.TButton"
 )
-btn_start_cloud_schedule.grid(
-    row=5,
-    column=4,
-    sticky="e",
-    pady=(12, 0)
-)
-ttk.Label(
-    google_drive_card,
-    text="Cloud Folder:",
-    background=CARD,
-    foreground=TEXT
-).grid(
-    row=4,
-    column=0,
-    sticky="w",
-    pady=(5, 5)
-)
+btn_start_cloud_schedule.grid(row=0, column=0, sticky="e")
 
-main_buttons.extend([
-    btn_connect_google,
-    btn_test_google,
-    btn_select_cloud_items,
-    btn_disconnect_google,
-    btn_start_cloud_schedule
-])
+main_buttons.append(btn_start_cloud_schedule)
 
 
 # =========================================================
@@ -3112,6 +4005,7 @@ ttk.Label(
 
 button_row = ttk.Frame(files_card, style="Card.TFrame")
 button_row.pack(fill=X, pady=(0, 10))
+button_row.bind("<Configure>", update_backup_tab_layout)
 
 btn_add_files = ttk.Button(button_row, text="Add Files", command=add_files)
 btn_add_files.pack(side=LEFT, padx=(0, 8))
@@ -3145,9 +4039,13 @@ listbox = Listbox(
 listbox.pack(side=LEFT, fill=BOTH, expand=True)
 
 list_scrollbar = Scrollbar(listbox_frame)
-list_scrollbar.pack(side=RIGHT, fill=Y)
-listbox.config(yscrollcommand=list_scrollbar.set)
-list_scrollbar.config(command=listbox.yview)    
+configure_auto_hide_scrollbar(
+    listbox,
+    list_scrollbar,
+    VERTICAL,
+    "pack",
+    {"side": RIGHT, "fill": Y}
+)
 
 # =========================================================
 # Backup Tab: Destination and Format
@@ -3209,23 +4107,131 @@ startup_checkbox.grid(
 # Scheduler Tab
 # =========================================================
 
-scheduler_card = ttk.Frame(scheduler_tab, style="Card.TFrame", padding=15)
-scheduler_card.pack(fill=X, pady=10)    
+scheduler_scroll_frame = ttk.Frame(scheduler_tab)
+scheduler_scroll_frame.pack(fill=BOTH, expand=True)
+scheduler_scroll_frame.columnconfigure(0, weight=1)
+scheduler_scroll_frame.rowconfigure(0, weight=1)
 
-ttk.Label(
-    scheduler_card,
-    text="Backup Scheduler",
-    background=CARD,
-    foreground=TEXT,
-    font=("Segoe UI", 12, "bold")
-).grid(row=0, column=0, sticky="w", columnspan=4, pady=(0, 10)) 
+scheduler_canvas = Canvas(
+    scheduler_scroll_frame,
+    bg=BG,
+    highlightthickness=0,
+    bd=0
+)
+scheduler_canvas.grid(row=0, column=0, sticky="nsew")
+
+scheduler_vertical_scrollbar = Scrollbar(
+    scheduler_scroll_frame,
+    orient=VERTICAL,
+    command=scheduler_canvas.yview
+)
+scheduler_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+scheduler_vertical_scrollbar.grid_remove()
+
+scheduler_horizontal_scrollbar = Scrollbar(
+    scheduler_scroll_frame,
+    orient=HORIZONTAL,
+    command=scheduler_canvas.xview
+)
+scheduler_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+scheduler_horizontal_scrollbar.grid_remove()
+
+scheduler_canvas.configure(
+    yscrollcommand=scheduler_vertical_scrollbar.set,
+    xscrollcommand=scheduler_horizontal_scrollbar.set
+)
+
+scheduler_content = ttk.Frame(scheduler_canvas)
+scheduler_content_window = scheduler_canvas.create_window(
+    (0, 0),
+    window=scheduler_content,
+    anchor="nw"
+)
+scheduler_content.bind("<Configure>", update_scheduler_scroll_region)
+scheduler_canvas.bind("<Configure>", update_scheduler_scroll_region)
+scheduler_canvas.bind("<Enter>", bind_scheduler_mousewheel)
+scheduler_canvas.bind("<Leave>", unbind_scheduler_mousewheel)
+
+scheduler_paned = PanedWindow(
+    scheduler_content,
+    orient=HORIZONTAL,
+    bg=CARD,
+    bd=0,
+    height=330,
+    width=1040,
+    sashwidth=6,
+    sashrelief=FLAT,
+    showhandle=False
+)
+scheduler_paned.pack(fill=X, pady=(0, 10))
+
+manual_scheduler_card = ttk.Frame(scheduler_paned, style="Card.TFrame", padding=15)
+manual_scheduler_card.columnconfigure(0, weight=1)
+
+create_scheduler_section_header(manual_scheduler_card, "manual", "Manual Backups")
 
 hours_var = StringVar(value="12")
 minutes_var = StringVar(value="00")
 ampm_var = StringVar(value="AM")
 
-time_row = ttk.Frame(scheduler_card, style="Card.TFrame")
-time_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
+schedule_details_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+schedule_details_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+ttk.Label(
+    schedule_details_frame,
+    text="Schedule Name:",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 8))
+
+ttk.Entry(
+    schedule_details_frame,
+    textvariable=schedule_name_var,
+    width=20
+).pack(side=LEFT, padx=(0, 14))
+
+ttk.Checkbutton(
+    schedule_details_frame,
+    text="Use office file preset",
+    variable=office_schedule_var,
+    command=update_office_preset_caption
+).pack(side=LEFT)
+
+ttk.Label(
+    manual_scheduler_card,
+    textvariable=office_preset_caption_var,
+    background=CARD,
+    foreground=MUTED,
+    wraplength=430,
+    justify=LEFT
+).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+manual_destination_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+manual_destination_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+manual_destination_row.columnconfigure(1, weight=1)
+
+ttk.Label(
+    manual_destination_row,
+    text="Destination:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+ttk.Entry(
+    manual_destination_row,
+    textvariable=manual_backup_destination_var,
+    width=36
+).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+
+btn_browse_manual_destination = ttk.Button(
+    manual_destination_row,
+    text="Browse",
+    command=choose_manual_backup_destination
+)
+btn_browse_manual_destination.grid(row=0, column=2, sticky="w")
+
+time_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+time_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
 ttk.Label(
     time_row,
@@ -3261,15 +4267,56 @@ ampm_dropdown = ttk.Combobox(
 )
 ampm_dropdown.pack(side=LEFT)
 
-btn_add_time = ttk.Button(scheduler_card, text="Add Time/Day", command=add_backup_time, width=BTN_WIDTH)
-btn_remove_time = ttk.Button(scheduler_card, text="Remove Selected", command=remove_selected_time, width=BTN_WIDTH)
-btn_add_time.grid(row=4, column=0, sticky="w", padx=(0, 8), pady=5)
-btn_remove_time.grid(row=4, column=1, sticky="w", pady=5)
+days_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+days_frame.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+ttk.Label(
+    days_frame,
+    text="Days:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=0, column=0, padx=(0, 8))
+
+for i, (day, var) in enumerate(selected_days.items(), start=1):
+    ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
+
+manual_button_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+manual_button_row.grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+manual_button_row.columnconfigure(0, minsize=132)
+manual_button_row.columnconfigure(1, minsize=132)
+
+btn_add_time = ttk.Button(
+    manual_button_row,
+    text="Add Manual",
+    command=add_backup_time,
+    width=BTN_WIDTH
+)
+btn_add_time.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+btn_remove_time = ttk.Button(
+    manual_button_row,
+    text="Remove Selected",
+    command=remove_selected_time,
+    width=BTN_WIDTH
+)
+btn_remove_time.grid(row=0, column=1, sticky="ew")
+
+schedule_card = ttk.Frame(scheduler_content, style="Card.TFrame", padding=15)
+schedule_card.columnconfigure(0, weight=1)
+schedule_card.pack(fill=BOTH, expand=True, pady=(0, 10))
+
+create_scheduler_section_header(schedule_card, "scheduled", "Scheduled Backups")
+
+schedule_list_frame = ttk.Frame(schedule_card, style="Card.TFrame")
+schedule_list_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+schedule_card.rowconfigure(1, weight=1)
+schedule_list_frame.columnconfigure(0, weight=1)
+schedule_list_frame.rowconfigure(0, weight=1)
 
 schedule_listbox = Listbox(
-    scheduler_card,
-    height=10,
-    width=75,
+    schedule_list_frame,
+    height=8,
+    width=105,
     bg="#1f1f1f",
     fg="#ffffff",
     selectbackground="#0078d4",
@@ -3277,31 +4324,39 @@ schedule_listbox = Listbox(
     font=("Segoe UI", 10),
     relief=FLAT
 )
-schedule_listbox.grid(
-    row=1,
-    column=4,
-    rowspan=8,
-    sticky="nw",
-    padx=(20, 0),
-    pady=(0, 10)
+schedule_listbox.grid(row=0, column=0, sticky="nsew")
+
+schedule_scrollbar = Scrollbar(schedule_list_frame)
+configure_auto_hide_scrollbar(
+    schedule_listbox,
+    schedule_scrollbar,
+    VERTICAL,
+    "grid",
+    {"row": 0, "column": 1, "sticky": "ns"}
 )
 
+scheduler_control_row = ttk.Frame(schedule_card, style="Card.TFrame")
+scheduler_control_row.grid(row=2, column=0, sticky="w")
+scheduler_control_row.columnconfigure(0, minsize=132)
+scheduler_control_row.columnconfigure(1, minsize=132)
+
 btn_start_scheduler = ttk.Button(
-    scheduler_card,
+    scheduler_control_row,
     text="Start Schedule",
     width=BTN_WIDTH,
     command=start_scheduler,
     style="CompactAccent.TButton"
 )
+
 btn_stop_scheduler = ttk.Button(
-    scheduler_card,
+    scheduler_control_row,
     text="Stop Schedule",
     width=BTN_WIDTH,
     command=stop_scheduler
 )
 
 status_label = ttk.Label(
-    scheduler_card,
+    scheduler_control_row,
     textvariable=scheduler_status_var,
     image=icon_red,
     compound="left",
@@ -3309,55 +4364,96 @@ status_label = ttk.Label(
     foreground=TEXT
 )
 
-btn_start_scheduler.grid(row=8, column=0, sticky="w", pady=(10, 0))
-btn_stop_scheduler.grid(row=8, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-status_label.grid(row=8, column=2, sticky="w", padx=(10, 0), pady=(10, 0))
+btn_start_scheduler.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+btn_stop_scheduler.grid(row=0, column=1, sticky="ew")
+status_label.grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+auto_scheduler_card = ttk.Frame(scheduler_paned, style="Card.TFrame", padding=15)
+auto_scheduler_card.columnconfigure(0, weight=1)
+
+create_scheduler_section_header(auto_scheduler_card, "auto", "Auto Backups")
+
+auto_destination_row = ttk.Frame(auto_scheduler_card, style="Card.TFrame")
+auto_destination_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+auto_destination_row.columnconfigure(1, weight=1)
+
+ttk.Label(
+    auto_destination_row,
+    text="Destination:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+ttk.Entry(
+    auto_destination_row,
+    textvariable=auto_backup_destination_var,
+    width=36
+).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+
+btn_browse_auto_destination = ttk.Button(
+    auto_destination_row,
+    text="Browse",
+    command=choose_auto_backup_destination
+)
+btn_browse_auto_destination.grid(row=0, column=2, sticky="w")
+
+auto_options_frame = ttk.Frame(auto_scheduler_card, style="Card.TFrame")
+auto_options_frame.grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+ttk.Label(
+    auto_options_frame,
+    text="Office file interval:",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 6))
+
+ttk.Spinbox(
+    auto_options_frame,
+    from_=1,
+    to=1440,
+    textvariable=auto_backup_interval_var,
+    width=5
+).pack(side=LEFT, padx=(0, 6))
+
+ttk.Label(
+    auto_options_frame,
+    text="min",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 10))
+
+btn_add_office_auto = ttk.Button(
+    auto_options_frame,
+    text="Add Auto",
+    command=add_office_auto_backup_schedule,
+    width=BTN_WIDTH
+)
+btn_add_office_auto.pack(side=LEFT)
+
+scheduler_section_widgets.update({
+    "manual": manual_scheduler_card,
+    "auto": auto_scheduler_card
+})
+refresh_scheduler_sections()
 
 main_buttons.extend([
     btn_add_time,
     btn_remove_time,
+    btn_browse_manual_destination,
+    btn_browse_auto_destination,
+    btn_add_office_auto,
     btn_start_scheduler,
     btn_stop_scheduler
 ])
-
-days_frame = ttk.Frame(scheduler_card, style="Card.TFrame")
-days_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(0, 8))
-
-for i, (day, var) in enumerate(selected_days.items()):
-    ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
-
-schedule_details_frame = ttk.Frame(scheduler_card, style="Card.TFrame")
-schedule_details_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
-
-ttk.Label(
-    schedule_details_frame,
-    text="Schedule Name:",
-    background=CARD,
-    foreground=TEXT
-).pack(side=LEFT, padx=(0, 8))
-
-ttk.Entry(
-    schedule_details_frame,
-    textvariable=schedule_name_var,
-    width=20
-).pack(side=LEFT)
-
-scheduler_card.columnconfigure(0, weight=0)
-scheduler_card.columnconfigure(1, weight=0)
-scheduler_card.columnconfigure(2, weight=0)
-scheduler_card.columnconfigure(3, weight=0)
-scheduler_card.columnconfigure(4, weight=1)
-for i in range(10):
-    scheduler_card.rowconfigure(i, weight=0)
 
 
 # =========================================================
 # Backup Tab: Actions
 # =========================================================
-    
+
 action_row = ttk.Frame(backup_tab)
 action_row.pack(fill=X, pady=15)
-action_row.columnconfigure(0, weight=1) 
+action_row.columnconfigure(0, weight=1)
 
 btn_start_backup = ttk.Button(
     action_row,
@@ -3367,7 +4463,7 @@ btn_start_backup = ttk.Button(
 )
 btn_start_backup.grid(row=0, column=0, sticky="e")
 
-main_buttons.extend([   
+main_buttons.extend([
     btn_start_backup
 ])
 
@@ -3376,6 +4472,12 @@ refresh_google_drive_status()
 refresh_logs_tab()
 update_startup_checkbox_style()
 update_backup_summary()
+root.after_idle(update_dashboard_card_layout)
+root.after_idle(update_cloud_schedule_layout)
+root.after_idle(update_backup_tab_layout)
+root.after_idle(update_cloud_items_layout)
+root.after_idle(update_sql_card_layout)
+root.after_idle(update_google_drive_layout)
 root.protocol("WM_DELETE_WINDOW", on_app_close)
 
 setup_tray_icon()

@@ -1,5 +1,5 @@
 #define MyAppName "Backup Compressor"
-#define MyAppVersion "2.5.1"
+#define MyAppVersion "2.6.2"
 #define MyAppPublisher "V"
 #define MyAppExeName "Backup Compressor.exe"
 
@@ -13,7 +13,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DisableDirPage=yes
 DefaultGroupName={#MyAppName}
 OutputDir=installer_output
-OutputBaseFilename=Backup Compressor Setup 2.5.1
+OutputBaseFilename=Backup Compressor Setup 2.6.2
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
