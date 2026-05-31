@@ -25,8 +25,10 @@ from tkinter import ttk
 # Constants
 # =========================================================
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.6.2"
+APP_VERSION = "2.6.3"
 ALWAYS_RUN_AS_ADMIN = True
+SINGLE_INSTANCE_MUTEX_NAME = r"Local\BackupCompressorSingleInstance"
+ERROR_ALREADY_EXISTS = 183
 
 BG = "#313338"
 CARD = "#2b2d31"
@@ -39,6 +41,7 @@ LOCAL_SCHEDULE_COLOR = "#3498db"
 CLOUD_SCHEDULE_COLOR = "#1abc9c"
 STOPPED_COLOR = "#ffffff"
 BTN_WIDTH = 16
+SCHEDULER_POLL_INTERVAL_MS = 15000
 GOOGLE_DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 OFFICE_FILE_EXTENSIONS = (
     ".doc", ".docx", ".docm",
@@ -58,6 +61,7 @@ OFFICE_BACKUP_FOLDER_NAMES = ("Desktop", "Documents", "Downloads")
 # =========================================================
 main_buttons = []
 selected_items = []
+scheduler_selected_items = []
 cloud_selected_items = []
 scheduled_backup_times = []
 scheduler_running = False
@@ -77,6 +81,7 @@ backup_result_queue = queue.Queue()
 ui_action_queue = queue.Queue()
 tray_icon = None
 app_should_exit = False
+single_instance_mutex = None
 
 
 # App data lives in %APPDATA%\Backup Compressor so settings and logs persist
@@ -129,6 +134,30 @@ def relaunch_as_admin_if_needed():
         pass
 
     sys.exit(1)
+
+def ensure_single_instance():
+    global single_instance_mutex
+
+    if os.name != "nt":
+        return
+
+    single_instance_mutex = ctypes.windll.kernel32.CreateMutexW(
+        None,
+        False,
+        SINGLE_INSTANCE_MUTEX_NAME
+    )
+
+    if not single_instance_mutex:
+        return
+
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Backup Compressor is already running.",
+            APP_NAME,
+            0x40
+        )
+        sys.exit(0)
 
 def hide_console_window():
     if os.name != "nt":
@@ -192,6 +221,52 @@ def choose_auto_backup_destination():
     folder = filedialog.askdirectory(parent=root)
     if folder:
         auto_backup_destination_var.set(folder)
+
+def add_scheduler_files():
+    files = filedialog.askopenfilenames(parent=root)
+    if files:
+        scheduler_selected_items.extend(files)
+        update_scheduler_item_list()
+        save_app_settings()
+
+def add_scheduler_folder():
+    folder = filedialog.askdirectory(parent=root)
+    if folder:
+        scheduler_selected_items.append(folder)
+        update_scheduler_item_list()
+        save_app_settings()
+
+def remove_selected_scheduler_item():
+    selected = scheduler_items_listbox.curselection()
+
+    if not selected:
+        messagebox.showwarning("No Item Selected", "Select a scheduler item to remove.")
+        return
+
+    for index in reversed(selected):
+        scheduler_selected_items.pop(index)
+
+    update_scheduler_item_list()
+    save_app_settings()
+
+def clear_scheduler_items():
+    scheduler_selected_items.clear()
+    update_scheduler_item_list()
+    save_app_settings()
+
+def update_scheduler_item_list():
+    if "scheduler_items_listbox" not in globals():
+        return
+
+    scheduler_items_listbox.delete(0, END)
+
+    for item in scheduler_selected_items:
+        scheduler_items_listbox.insert(END, item)
+
+    file_count, folder_count = get_selected_item_counts(scheduler_selected_items)
+    scheduler_selected_count_var.set(
+        f"{file_count} file(s), {folder_count} folder(s) selected"
+    )
 
 def get_backup_name(extension):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -496,11 +571,13 @@ def configure_auto_hide_scrollbar(widget, scrollbar, orient=VERTICAL, geometry="
 def save_app_settings():
     # Persist lightweight preferences only; profile files keep their own item lists.
     settings = {
+        "app_version": APP_VERSION,
         "last_profile": active_profile_path,
         "destination": destination_var.get(),
         "manual_backup_destination": manual_backup_destination_var.get(),
         "auto_backup_destination": auto_backup_destination_var.get(),
         "format": format_var.get(),
+        "scheduler_selected_items": scheduler_selected_items,
         "schedule_times": scheduled_backup_times,
         "cloud_schedule_times": cloud_scheduled_backup_times,
         "cloud_selected_items": cloud_selected_items,
@@ -523,6 +600,8 @@ def load_app_settings():
         with open(settings_file, "r", encoding="utf-8") as file:
             settings = json.load(file)
 
+        settings_were_reset = reset_old_settings_after_update(settings)
+
         destination_var.set(settings.get("destination", ""))
         manual_backup_destination_var.set(
             settings.get("manual_backup_destination", settings.get("destination", ""))
@@ -540,6 +619,10 @@ def load_app_settings():
         scheduled_backup_times.extend(settings.get("schedule_times", []))
         update_schedule_list()
 
+        scheduler_selected_items.clear()
+        scheduler_selected_items.extend(settings.get("scheduler_selected_items", []))
+        update_scheduler_item_list()
+
         cloud_scheduled_backup_times.clear()
         cloud_scheduled_backup_times.extend(settings.get("cloud_schedule_times", []))
         update_cloud_schedule_list()
@@ -550,8 +633,57 @@ def load_app_settings():
 
         active_profile_path = settings.get("last_profile")
 
+        if settings_were_reset:
+            save_app_settings()
+
     except Exception:
         pass
+
+def reset_old_settings_after_update(settings):
+    saved_version = settings.get("app_version")
+
+    if saved_version == APP_VERSION:
+        return False
+
+    backup_cloud_settings_before_update(settings, saved_version)
+    cloud_schedule_times = settings.get("cloud_schedule_times", [])
+    cloud_selected_items = settings.get("cloud_selected_items", [])
+    google_drive_folder = settings.get("google_drive_folder", "My Drive")
+    sql_include_scheduler = settings.get("sql_include_scheduler", False)
+
+    settings["app_version"] = APP_VERSION
+    settings["last_profile"] = None
+    settings["destination"] = ""
+    settings["manual_backup_destination"] = ""
+    settings["auto_backup_destination"] = ""
+    settings["scheduler_selected_items"] = []
+    settings["schedule_times"] = []
+    settings["cloud_schedule_times"] = cloud_schedule_times
+    settings["cloud_selected_items"] = cloud_selected_items
+    settings["google_drive_folder"] = google_drive_folder
+    settings["sql_include_scheduler"] = sql_include_scheduler
+
+    return True
+
+def backup_cloud_settings_before_update(settings, saved_version):
+    cloud_backup = {
+        "backup_created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "from_app_version": saved_version or "unknown",
+        "to_app_version": APP_VERSION,
+        "cloud_schedule_times": settings.get("cloud_schedule_times", []),
+        "cloud_selected_items": settings.get("cloud_selected_items", []),
+        "google_drive_folder": settings.get("google_drive_folder", "My Drive"),
+        "sql_include_scheduler": settings.get("sql_include_scheduler", False)
+    }
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(
+        app_data_folder,
+        f"cloud_settings_backup_{saved_version or 'unknown'}_to_{APP_VERSION}_{timestamp}.json"
+    )
+
+    with open(backup_file, "w", encoding="utf-8") as file:
+        json.dump(cloud_backup, file, indent=4)
 
 def on_app_close():
     save_app_settings()
@@ -1321,6 +1453,9 @@ def get_schedule_source_items(schedule):
     if isinstance(schedule, dict) and schedule.get("source") == "office_files":
         return get_office_backup_files()
 
+    if isinstance(schedule, dict) and "items" in schedule:
+        return list(schedule.get("items") or [])
+
     return list(selected_items)
 
 def get_schedule_destination(schedule=None):
@@ -1340,6 +1475,8 @@ def get_schedule_destination(schedule=None):
 
         if manual_destination:
             return manual_destination
+
+        return ""
 
     return destination_var.get().strip()
 
@@ -1687,13 +1824,13 @@ def write_scheduler_status(message):
         status = "running"
 
     write_backup_event("scheduler", status, message)
-    refresh_logs_tab()
+    queue_ui_action(refresh_logs_tab)
 
 # =========================================================
 # Scheduler and Tray Helpers
 # =========================================================
 
-def check_scheduled_backups():
+def check_scheduled_backups(schedule_next=True):
     global last_run_time
 
     if scheduler_running:
@@ -1761,7 +1898,8 @@ def check_scheduled_backups():
                 status_label.config(image=icon_blue)
                 refresh_schedule_tray_icon()
 
-    root.after(60000, check_scheduled_backups)
+    if schedule_next:
+        root.after(SCHEDULER_POLL_INTERVAL_MS, check_scheduled_backups)
 
 def start_cloud_backup_schedule():
     global cloud_scheduler_running
@@ -1811,6 +1949,7 @@ def start_cloud_backup_schedule():
     write_scheduler_status(
         f"Cloud backup schedule enabled from Cloud Backup tab. Local destination: {destination}. Google account: {google_email}"
     )
+    check_cloud_scheduled_backups(schedule_next=False)
 
 def get_selected_item_counts(items=None):
     items = selected_items if items is None else items
@@ -1877,14 +2016,18 @@ def add_backup_time():
 
     backup_time = f"{int(hour)}:{minute} {ampm}"
     uses_office_files = office_schedule_var.get()
-    destination = manual_backup_destination_var.get().strip() or destination_var.get().strip()
+    destination = manual_backup_destination_var.get().strip()
+
+    if not uses_office_files and not scheduler_selected_items:
+        messagebox.showwarning("No Items", "Add files or folders in the Scheduler tab before adding a manual schedule.")
+        return
 
     if not destination:
         messagebox.showwarning("No Manual Destination", "Choose a manual backup location first.")
         return
 
     new_schedule = {
-        "name": schedule_name_var.get().strip() or ("Office Files Backup" if uses_office_files else "Local Backup"),
+        "name": schedule_name_var.get().strip() or ("Office Files Backup" if uses_office_files else "Scheduler Backup"),
         "mode": "time",
         "source": "office_files" if uses_office_files else "selected_items",
         "time": backup_time,
@@ -1892,6 +2035,9 @@ def add_backup_time():
         "description": schedule_description_var.get().strip() or "No description",
         "days": selected_schedule_days
     }
+
+    if not uses_office_files:
+        new_schedule["items"] = list(scheduler_selected_items)
 
     scheduled_backup_times.append(new_schedule)
 
@@ -1919,7 +2065,7 @@ def add_office_auto_backup_schedule():
         messagebox.showwarning("Invalid Interval", "Interval must be at least 1 minute.")
         return
 
-    destination = auto_backup_destination_var.get().strip() or destination_var.get().strip()
+    destination = auto_backup_destination_var.get().strip()
 
     if not destination:
         messagebox.showwarning("No Auto Destination", "Choose an auto backup location first.")
@@ -1994,6 +2140,7 @@ def start_scheduler():  # start
     refresh_schedule_tray_icon()
 
     write_scheduler_status("Scheduler started")
+    check_scheduled_backups(schedule_next=False)
 
 def create_tray_image(color=STOPPED_COLOR):
     size = 64
@@ -2941,6 +3088,7 @@ def start_cloud_scheduler():
         "Cloud Backup Scheduler Started",
         "Cloud backup scheduler is now running."
     )
+    check_cloud_scheduled_backups(schedule_next=False)
 
 def stop_cloud_scheduler():
     global cloud_scheduler_running
@@ -3234,7 +3382,7 @@ def update_google_drive_layout(event=None):
         1 if width < 430 else 3
     )
 
-def check_cloud_scheduled_backups():
+def check_cloud_scheduled_backups(schedule_next=True):
     global cloud_last_run_time
 
     if cloud_scheduler_running:
@@ -3264,13 +3412,15 @@ def check_cloud_scheduled_backups():
             cloud_status_var.set("Idle")
             refresh_schedule_tray_icon()
 
-    root.after(60000, check_cloud_scheduled_backups)
+    if schedule_next:
+        root.after(SCHEDULER_POLL_INTERVAL_MS, check_cloud_scheduled_backups)
 
 # =========================================================
 # Tkinter App Bootstrap
 # =========================================================
 
 relaunch_as_admin_if_needed()
+ensure_single_instance()
 hide_console_window()
 
 root = Tk()
@@ -3340,6 +3490,7 @@ schedule_description_var = StringVar(value="Files/Folders backup")
 office_schedule_var = BooleanVar(value=False)
 office_preset_caption_var = StringVar(value="")
 auto_backup_interval_var = StringVar(value="10")
+scheduler_selected_count_var = StringVar(value="0 file(s), 0 folder(s) selected")
 
 progress_var = DoubleVar(value=0)
 status_var = StringVar(value="Ready")
@@ -4157,7 +4308,7 @@ scheduler_paned = PanedWindow(
     orient=HORIZONTAL,
     bg=CARD,
     bd=0,
-    height=330,
+    height=430,
     width=1040,
     sashwidth=6,
     sashrelief=FLAT,
@@ -4192,7 +4343,7 @@ ttk.Entry(
 
 ttk.Checkbutton(
     schedule_details_frame,
-    text="Use office file preset",
+    text="Office file preset",
     variable=office_schedule_var,
     command=update_office_preset_caption
 ).pack(side=LEFT)
@@ -4206,8 +4357,84 @@ ttk.Label(
     justify=LEFT
 ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
+scheduler_items_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
+scheduler_items_frame.grid(row=3, column=0, columnspan=4, sticky="nsew", pady=(0, 8))
+scheduler_items_frame.columnconfigure(0, weight=1)
+scheduler_items_frame.rowconfigure(1, weight=1)
+manual_scheduler_card.rowconfigure(3, weight=1)
+
+ttk.Label(
+    scheduler_items_frame,
+    text="Scheduler Backup Items",
+    background=CARD,
+    foreground=TEXT,
+    font=("Segoe UI", 10, "bold")
+).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+scheduler_items_listbox = Listbox(
+    scheduler_items_frame,
+    height=4,
+    width=60,
+    bg="#1f1f1f",
+    fg="#ffffff",
+    selectbackground="#0078d4",
+    selectforeground="#ffffff",
+    font=("Segoe UI", 9),
+    relief=FLAT,
+    selectmode=EXTENDED
+)
+scheduler_items_listbox.grid(row=1, column=0, sticky="nsew")
+
+scheduler_items_scrollbar = Scrollbar(scheduler_items_frame)
+configure_auto_hide_scrollbar(
+    scheduler_items_listbox,
+    scheduler_items_scrollbar,
+    VERTICAL,
+    "grid",
+    {"row": 1, "column": 1, "sticky": "ns"}
+)
+
+scheduler_items_button_row = ttk.Frame(scheduler_items_frame, style="Card.TFrame")
+scheduler_items_button_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+btn_add_scheduler_files = ttk.Button(
+    scheduler_items_button_row,
+    text="Add Files",
+    command=add_scheduler_files
+)
+btn_add_scheduler_files.pack(side=LEFT, padx=(0, 6))
+
+btn_add_scheduler_folder = ttk.Button(
+    scheduler_items_button_row,
+    text="Add Folder",
+    command=add_scheduler_folder
+)
+btn_add_scheduler_folder.pack(side=LEFT, padx=(0, 6))
+
+btn_remove_scheduler_item = ttk.Button(
+    scheduler_items_button_row,
+    text="Remove Selected",
+    command=remove_selected_scheduler_item
+)
+btn_remove_scheduler_item.pack(side=LEFT, padx=(0, 6))
+
+btn_clear_scheduler_items = ttk.Button(
+    scheduler_items_button_row,
+    text="Clear",
+    command=clear_scheduler_items
+)
+btn_clear_scheduler_items.pack(side=LEFT)
+
+ttk.Label(
+    scheduler_items_frame,
+    textvariable=scheduler_selected_count_var,
+    background=CARD,
+    foreground=MUTED,
+    font=("Segoe UI", 9)
+).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
 manual_destination_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-manual_destination_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+manual_destination_row.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(0, 8))
 manual_destination_row.columnconfigure(1, weight=1)
 
 ttk.Label(
@@ -4231,7 +4458,7 @@ btn_browse_manual_destination = ttk.Button(
 btn_browse_manual_destination.grid(row=0, column=2, sticky="w")
 
 time_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-time_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 8))
+time_row.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
 ttk.Label(
     time_row,
@@ -4268,7 +4495,7 @@ ampm_dropdown = ttk.Combobox(
 ampm_dropdown.pack(side=LEFT)
 
 days_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-days_frame.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 8))
+days_frame.grid(row=6, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
 ttk.Label(
     days_frame,
@@ -4281,7 +4508,7 @@ for i, (day, var) in enumerate(selected_days.items(), start=1):
     ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
 
 manual_button_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-manual_button_row.grid(row=6, column=0, columnspan=4, sticky="w", pady=(2, 0))
+manual_button_row.grid(row=7, column=0, columnspan=4, sticky="w", pady=(2, 0))
 manual_button_row.columnconfigure(0, minsize=132)
 manual_button_row.columnconfigure(1, minsize=132)
 
@@ -4437,6 +4664,10 @@ scheduler_section_widgets.update({
 refresh_scheduler_sections()
 
 main_buttons.extend([
+    btn_add_scheduler_files,
+    btn_add_scheduler_folder,
+    btn_remove_scheduler_item,
+    btn_clear_scheduler_items,
     btn_add_time,
     btn_remove_time,
     btn_browse_manual_destination,

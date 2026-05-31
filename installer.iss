@@ -1,5 +1,5 @@
 #define MyAppName "Backup Compressor"
-#define MyAppVersion "2.6.2"
+#define MyAppVersion "2.6.3"
 #define MyAppPublisher "V"
 #define MyAppExeName "Backup Compressor.exe"
 
@@ -13,7 +13,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DisableDirPage=yes
 DefaultGroupName={#MyAppName}
 OutputDir=installer_output
-OutputBaseFilename=Backup Compressor Setup 2.6.2
+OutputBaseFilename=Backup Compressor Setup 2.6.3
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -42,6 +42,85 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 
 
 [Code]
+
+const
+  PreviousUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D37BB4F5-42C4-4C6B-91C7-BACKUPCOMPRESSOR}_is1';
+
+function GetPreviousUninstallString(var UninstallString: String): Boolean;
+begin
+  Result := True;
+
+  if RegQueryStringValue(HKLM, PreviousUninstallKey, 'UninstallString', UninstallString) then
+    Exit;
+
+  if RegQueryStringValue(HKCU, PreviousUninstallKey, 'UninstallString', UninstallString) then
+    Exit;
+
+  Result := False;
+end;
+
+function GetUninstallExe(UninstallString: String): String;
+var
+  EndQuotePos: Integer;
+  UninstallCommand: String;
+begin
+  UninstallCommand := UninstallString;
+
+  if Copy(UninstallCommand, 1, 1) = '"' then
+  begin
+    UninstallCommand := Copy(UninstallCommand, 2, Length(UninstallCommand) - 1);
+    EndQuotePos := Pos('"', UninstallCommand);
+
+    if EndQuotePos > 0 then
+      Result := Copy(UninstallCommand, 1, EndQuotePos - 1)
+    else
+      Result := UninstallCommand;
+  end
+  else
+    Result := UninstallCommand;
+end;
+
+function RunPreviousUninstaller(UninstallString: String): Boolean;
+var
+  ResultCode: Integer;
+  UninstallExe: String;
+begin
+  UninstallExe := GetUninstallExe(UninstallString);
+
+  if not FileExists(UninstallExe) then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  if not Exec(
+    UninstallExe,
+    '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  Result := ResultCode = 0;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  UninstallString: String;
+begin
+  Result := '';
+
+  if GetPreviousUninstallString(UninstallString) then
+  begin
+    if not RunPreviousUninstaller(UninstallString) then
+      Result := 'Setup could not uninstall the existing {#MyAppName} installation. Please uninstall it manually and run Setup again.';
+  end;
+end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
