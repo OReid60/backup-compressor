@@ -25,16 +25,37 @@ from tkinter import ttk
 # Constants
 # =========================================================
 APP_NAME = "Backup Compressor"
-APP_VERSION = "2.6.3"
+APP_VERSION = "3.0.1"
 ALWAYS_RUN_AS_ADMIN = True
 SINGLE_INSTANCE_MUTEX_NAME = r"Local\BackupCompressorSingleInstance"
 ERROR_ALREADY_EXISTS = 183
 
-BG = "#313338"
-CARD = "#2b2d31"
-CARD_DARK = "#1e1f22"
-TEXT = "#f2f3f5"
-MUTED = "#b5bac1"
+THEME_MODE = "dark"
+THEMES = {
+    "dark": {
+        "bg": "#313338",
+        "card": "#2b2d31",
+        "card_dark": "#1e1f22",
+        "text": "#f2f3f5",
+        "muted": "#b5bac1",
+        "hover": "#343647",
+        "shell": "#3f4147"
+    },
+    "light": {
+        "bg": "#f2f3f5",
+        "card": "#ffffff",
+        "card_dark": "#e7e9ed",
+        "text": "#1f2328",
+        "muted": "#5f6670",
+        "hover": "#dfe3ff",
+        "shell": "#c8cdd6"
+    }
+}
+BG = THEMES[THEME_MODE]["bg"]
+CARD = THEMES[THEME_MODE]["card"]
+CARD_DARK = THEMES[THEME_MODE]["card_dark"]
+TEXT = THEMES[THEME_MODE]["text"]
+MUTED = THEMES[THEME_MODE]["muted"]
 ACCENT = "#5865f2"
 ACCENT_HOVER = "#4752c4"
 LOCAL_SCHEDULE_COLOR = "#3498db"
@@ -60,14 +81,18 @@ OFFICE_BACKUP_FOLDER_NAMES = ("Desktop", "Documents", "Downloads")
 # Runtime State
 # =========================================================
 main_buttons = []
+main_tab_buttons = []
+scheduler_subtab_buttons = []
+cloud_subtab_buttons = []
 selected_items = []
 scheduler_selected_items = []
+auto_selected_items = []
 cloud_selected_items = []
 scheduled_backup_times = []
 scheduler_running = False
 last_run_time = None
 schedule_last_run_times = {}
-scheduler_section_order = ["manual", "auto"]
+scheduler_section_order = ["manual", "auto", "scheduled"]
 scheduler_section_widgets = {}
 cloud_section_order = ["cloud_items", "google_drive", "sql", "cloud_schedule"]
 cloud_section_widgets = {}
@@ -249,22 +274,87 @@ def remove_selected_scheduler_item():
     update_scheduler_item_list()
     save_app_settings()
 
+def remove_selected_schedule_tab_item():
+    selected = schedule_items_listbox.curselection()
+
+    if not selected:
+        messagebox.showwarning("No Item Selected", "Select a schedule item to remove.")
+        return
+
+    for index in reversed(selected):
+        scheduler_selected_items.pop(index)
+
+    update_scheduler_item_list()
+    save_app_settings()
+
 def clear_scheduler_items():
     scheduler_selected_items.clear()
     update_scheduler_item_list()
     save_app_settings()
 
 def update_scheduler_item_list():
-    if "scheduler_items_listbox" not in globals():
-        return
+    listboxes = []
 
-    scheduler_items_listbox.delete(0, END)
+    if "scheduler_items_listbox" in globals():
+        listboxes.append(scheduler_items_listbox)
 
-    for item in scheduler_selected_items:
-        scheduler_items_listbox.insert(END, item)
+    if "schedule_items_listbox" in globals():
+        listboxes.append(schedule_items_listbox)
+
+    for listbox_widget in listboxes:
+        listbox_widget.delete(0, END)
+
+        for item in scheduler_selected_items:
+            listbox_widget.insert(END, item)
 
     file_count, folder_count = get_selected_item_counts(scheduler_selected_items)
     scheduler_selected_count_var.set(
+        f"{file_count} file(s), {folder_count} folder(s) selected"
+    )
+
+def add_auto_scheduler_files():
+    files = filedialog.askopenfilenames(parent=root)
+    if files:
+        auto_selected_items.extend(files)
+        update_auto_scheduler_item_list()
+        save_app_settings()
+
+def add_auto_scheduler_folder():
+    folder = filedialog.askdirectory(parent=root)
+    if folder:
+        auto_selected_items.append(folder)
+        update_auto_scheduler_item_list()
+        save_app_settings()
+
+def remove_selected_auto_scheduler_item():
+    selected = auto_scheduler_items_listbox.curselection()
+
+    if not selected:
+        messagebox.showwarning("No Item Selected", "Select an auto backup item to remove.")
+        return
+
+    for index in reversed(selected):
+        auto_selected_items.pop(index)
+
+    update_auto_scheduler_item_list()
+    save_app_settings()
+
+def clear_auto_scheduler_items():
+    auto_selected_items.clear()
+    update_auto_scheduler_item_list()
+    save_app_settings()
+
+def update_auto_scheduler_item_list():
+    if "auto_scheduler_items_listbox" not in globals():
+        return
+
+    auto_scheduler_items_listbox.delete(0, END)
+
+    for item in auto_selected_items:
+        auto_scheduler_items_listbox.insert(END, item)
+
+    file_count, folder_count = get_selected_item_counts(auto_selected_items)
+    auto_selected_count_var.set(
         f"{file_count} file(s), {folder_count} folder(s) selected"
     )
 
@@ -578,6 +668,7 @@ def save_app_settings():
         "auto_backup_destination": auto_backup_destination_var.get(),
         "format": format_var.get(),
         "scheduler_selected_items": scheduler_selected_items,
+        "auto_selected_items": auto_selected_items,
         "schedule_times": scheduled_backup_times,
         "cloud_schedule_times": cloud_scheduled_backup_times,
         "cloud_selected_items": cloud_selected_items,
@@ -623,6 +714,10 @@ def load_app_settings():
         scheduler_selected_items.extend(settings.get("scheduler_selected_items", []))
         update_scheduler_item_list()
 
+        auto_selected_items.clear()
+        auto_selected_items.extend(settings.get("auto_selected_items", []))
+        update_auto_scheduler_item_list()
+
         cloud_scheduled_backup_times.clear()
         cloud_scheduled_backup_times.extend(settings.get("cloud_schedule_times", []))
         update_cloud_schedule_list()
@@ -645,45 +740,41 @@ def reset_old_settings_after_update(settings):
     if saved_version == APP_VERSION:
         return False
 
-    backup_cloud_settings_before_update(settings, saved_version)
-    cloud_schedule_times = settings.get("cloud_schedule_times", [])
-    cloud_selected_items = settings.get("cloud_selected_items", [])
-    google_drive_folder = settings.get("google_drive_folder", "My Drive")
-    sql_include_scheduler = settings.get("sql_include_scheduler", False)
-
+    backup_settings_before_update(settings, saved_version)
     settings["app_version"] = APP_VERSION
-    settings["last_profile"] = None
-    settings["destination"] = ""
-    settings["manual_backup_destination"] = ""
-    settings["auto_backup_destination"] = ""
-    settings["scheduler_selected_items"] = []
-    settings["schedule_times"] = []
-    settings["cloud_schedule_times"] = cloud_schedule_times
-    settings["cloud_selected_items"] = cloud_selected_items
-    settings["google_drive_folder"] = google_drive_folder
-    settings["sql_include_scheduler"] = sql_include_scheduler
+    settings.setdefault("last_profile", None)
+    settings.setdefault("destination", "")
+    settings.setdefault("manual_backup_destination", settings.get("destination", ""))
+    settings.setdefault("auto_backup_destination", settings.get("destination", ""))
+    settings.setdefault("format", "zip")
+    settings.setdefault("scheduler_selected_items", [])
+    settings.setdefault("auto_selected_items", [])
+    settings.setdefault("schedule_times", [])
+    settings.setdefault("cloud_schedule_times", [])
+    settings.setdefault("cloud_selected_items", [])
+    settings.setdefault("google_drive_folder", "My Drive")
+    settings.setdefault("sql_server", r".\SQLEXPRESS")
+    settings.setdefault("sql_database", "BackupCompressorTest")
+    settings.setdefault("sql_include_scheduler", False)
 
     return True
 
-def backup_cloud_settings_before_update(settings, saved_version):
-    cloud_backup = {
+def backup_settings_before_update(settings, saved_version):
+    settings_backup = {
         "backup_created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "from_app_version": saved_version or "unknown",
         "to_app_version": APP_VERSION,
-        "cloud_schedule_times": settings.get("cloud_schedule_times", []),
-        "cloud_selected_items": settings.get("cloud_selected_items", []),
-        "google_drive_folder": settings.get("google_drive_folder", "My Drive"),
-        "sql_include_scheduler": settings.get("sql_include_scheduler", False)
+        "settings": dict(settings)
     }
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_file = os.path.join(
         app_data_folder,
-        f"cloud_settings_backup_{saved_version or 'unknown'}_to_{APP_VERSION}_{timestamp}.json"
+        f"settings_backup_{saved_version or 'unknown'}_to_{APP_VERSION}_{timestamp}.json"
     )
 
     with open(backup_file, "w", encoding="utf-8") as file:
-        json.dump(cloud_backup, file, indent=4)
+        json.dump(settings_backup, file, indent=4)
 
 def on_app_close():
     save_app_settings()
@@ -1083,43 +1174,118 @@ def apply_modern_style():
 
     style.configure("TFrame", background=BG)
     style.configure("Card.TFrame", background=CARD, relief="flat")
+    style.configure("CardBody.TFrame", background=CARD, relief="flat")
     style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+    style.configure(
+        "Muted.TLabel",
+        background=CARD,
+        foreground=MUTED,
+        font=("Segoe UI", 9)
+    )
+    style.configure(
+        "CardTitle.TLabel",
+        background=CARD,
+        foreground=TEXT,
+        font=("Segoe UI", 12, "bold")
+    )
+    style.configure(
+        "SchedulerBadge.TLabel",
+        background=CARD_DARK,
+        foreground=MUTED,
+        font=("Segoe UI", 9, "bold"),
+        padding=(10, 4)
+    )
 
     style.configure(
     "TButton",
     font=("Segoe UI", 10),
-    padding=8,
+    padding=(14, 8),
     background=CARD_DARK,
     foreground=TEXT,
-    borderwidth=0,
-    relief="flat"
+    bordercolor=TEXT,
+    lightcolor=TEXT,
+    darkcolor=TEXT,
+    focuscolor=CARD_DARK,
+    borderwidth=1,
+    relief="solid"
 )
 
-    style.map("TButton", background=[("active", "#3f4147")])
+    style.map(
+        "TButton",
+        background=[
+            ("disabled", CARD_DARK),
+            ("pressed", THEMES[THEME_MODE]["hover"]),
+            ("active", THEMES[THEME_MODE]["hover"])
+        ],
+        foreground=[
+            ("disabled", MUTED),
+            ("active", TEXT)
+        ],
+        bordercolor=[
+            ("disabled", THEMES[THEME_MODE]["shell"]),
+            ("active", TEXT)
+        ],
+        lightcolor=[
+            ("disabled", THEMES[THEME_MODE]["shell"]),
+            ("active", TEXT)
+        ],
+        darkcolor=[
+            ("disabled", THEMES[THEME_MODE]["shell"]),
+            ("active", TEXT)
+        ]
+    )
 
     style.configure(
     "Accent.TButton",
-    background=ACCENT,
-    foreground="#ffffff",
+    background=CARD_DARK,
+    foreground=TEXT,
     font=("Segoe UI", 11, "bold"),
-    padding=10,
-    borderwidth=0,
-    relief="flat"
+    padding=(16, 10),
+    bordercolor=TEXT,
+    lightcolor=TEXT,
+    darkcolor=TEXT,
+    focuscolor=CARD_DARK,
+    borderwidth=1,
+    relief="solid"
 )
 
-    style.map("Accent.TButton", background=[("active", ACCENT_HOVER)])
+    style.map(
+        "Accent.TButton",
+        background=[
+            ("pressed", THEMES[THEME_MODE]["hover"]),
+            ("active", THEMES[THEME_MODE]["hover"])
+        ],
+        foreground=[("active", TEXT)],
+        bordercolor=[("active", TEXT)],
+        lightcolor=[("active", TEXT)],
+        darkcolor=[("active", TEXT)]
+    )
 
     style.configure(
     "CompactAccent.TButton",
-    background=ACCENT,
-    foreground="#ffffff",
+    background=CARD_DARK,
+    foreground=TEXT,
     font=("Segoe UI", 10),
-    padding=8,
-    borderwidth=0,
-    relief="flat"
+    padding=(14, 8),
+    bordercolor=TEXT,
+    lightcolor=TEXT,
+    darkcolor=TEXT,
+    focuscolor=CARD_DARK,
+    borderwidth=1,
+    relief="solid"
 )
 
-    style.map("CompactAccent.TButton", background=[("active", ACCENT_HOVER)])
+    style.map(
+        "CompactAccent.TButton",
+        background=[
+            ("pressed", THEMES[THEME_MODE]["hover"]),
+            ("active", THEMES[THEME_MODE]["hover"])
+        ],
+        foreground=[("active", TEXT)],
+        bordercolor=[("active", TEXT)],
+        lightcolor=[("active", TEXT)],
+        darkcolor=[("active", TEXT)]
+    )
 
     style.configure("TRadiobutton", background="#2d2d2d", foreground="#ffffff", font=("Segoe UI", 10))
     style.configure(
@@ -1147,18 +1313,25 @@ def apply_modern_style():
     # Notebook base
     style.configure(
         "TNotebook",
-        background="#1e1e1e",
+        background=BG,
         borderwidth=0,
         relief="flat"
     )
 
-    # Tabs
     style.configure(
-        "TNotebook",
+        "Main.TNotebook",
         background=BG,
         borderwidth=0,
+        relief="flat",
+        tabposition="wn"
+    )
+
+    style.configure(
+        "Content.TNotebook",
+        background=CARD,
+        borderwidth=0,
         relief="flat"
-)
+    )
 
     style.configure(
         "TNotebook.Tab",
@@ -1169,11 +1342,32 @@ def apply_modern_style():
         relief="flat"
 )
 
+    style.configure(
+        "Main.TNotebook.Tab",
+        background=CARD_DARK,
+        foreground=MUTED,
+        padding=(16, 12),
+        borderwidth=0,
+        relief="flat"
+)
+
     style.map(
         "TNotebook.Tab",
         background=[
             ("selected", CARD),
-            ("active", "#3f4147")
+            ("active", THEMES[THEME_MODE]["hover"])
+        ],
+        foreground=[
+            ("selected", TEXT),
+            ("active", TEXT)
+    ]
+)
+
+    style.map(
+        "Main.TNotebook.Tab",
+        background=[
+            ("selected", CARD),
+            ("active", THEMES[THEME_MODE]["hover"])
         ],
         foreground=[
             ("selected", TEXT),
@@ -1193,6 +1387,21 @@ def apply_modern_style():
             ]
         })
     ])
+
+    style.layout("Main.TNotebook.Tab", [
+        ("Notebook.tab", {
+            "sticky": "nswe",
+            "children": [
+                ("Notebook.padding", {
+                    "children": [
+                        ("Notebook.label", {"sticky": "w"})
+                    ]
+                })
+            ]
+        })
+    ])
+
+    style.layout("Content.TNotebook.Tab", [])
 
 # =========================================================
 # Backup Runtime Helpers
@@ -1830,6 +2039,48 @@ def write_scheduler_status(message):
 # Scheduler and Tray Helpers
 # =========================================================
 
+def should_run_interval_schedule(schedule, schedule_key, now, current_time, today):
+    recurrence = schedule.get("recurrence", "minutes")
+
+    if recurrence == "minutes":
+        schedule_days = schedule.get("days", [])
+
+        if schedule_days and today not in schedule_days:
+            return False
+
+        try:
+            interval_minutes = int(schedule.get("interval_minutes", 10))
+        except (TypeError, ValueError):
+            interval_minutes = 10
+
+        last_run = schedule_last_run_times.get(schedule_key)
+        return not last_run or (now - last_run).total_seconds() >= interval_minutes * 60
+
+    schedule_time = schedule.get("time")
+
+    if current_time != schedule_time:
+        return False
+
+    schedule_days = schedule.get("days", [])
+
+    if recurrence in ("daily", "weekly", "biweekly") and schedule_days and today not in schedule_days:
+        return False
+
+    if recurrence == "biweekly" and now.isocalendar().week % 2 != 0:
+        return False
+
+    if recurrence == "monthly":
+        try:
+            month_day = int(schedule.get("month_day", 1))
+        except (TypeError, ValueError):
+            month_day = 1
+
+        if now.day != month_day:
+            return False
+
+    last_run = schedule_last_run_times.get(schedule_key)
+    return last_run != now.strftime("%Y-%m-%d %I:%M %p")
+
 def check_scheduled_backups(schedule_next=True):
     global last_run_time
 
@@ -1845,16 +2096,16 @@ def check_scheduled_backups(schedule_next=True):
                 schedule_mode = schedule.get("mode", "time")
                 schedule_days = schedule.get("days", [])
 
-                if today not in schedule_days:
+                if schedule_mode == "interval":
+                    should_run = should_run_interval_schedule(
+                        schedule,
+                        schedule_key,
+                        now,
+                        current_time,
+                        today
+                    )
+                elif today not in schedule_days:
                     should_run = False
-                elif schedule_mode == "interval":
-                    try:
-                        interval_minutes = int(schedule.get("interval_minutes", 10))
-                    except (TypeError, ValueError):
-                        interval_minutes = 10
-
-                    last_run = schedule_last_run_times.get(schedule_key)
-                    should_run = not last_run or (now - last_run).total_seconds() >= interval_minutes * 60
                 else:
                     schedule_time = schedule.get("time")
                     last_run = schedule_last_run_times.get(schedule_key)
@@ -1872,7 +2123,11 @@ def check_scheduled_backups(schedule_next=True):
             if should_run:
                 last_run_time = current_time
 
-                if isinstance(schedule, dict) and schedule.get("mode") == "interval":
+                if (
+                    isinstance(schedule, dict)
+                    and schedule.get("mode") == "interval"
+                    and schedule.get("recurrence", "minutes") == "minutes"
+                ):
                     schedule_last_run_times[schedule_key] = now
                 elif isinstance(schedule, dict):
                     schedule_last_run_times[schedule_key] = now.strftime("%Y-%m-%d %I:%M %p")
@@ -1965,10 +2220,7 @@ def get_selected_item_counts(items=None):
     return file_count, folder_count
 
 def get_selected_sql_databases():
-    selected_databases = [
-        db for db, var in sql_database_vars.items()
-        if var.get()
-    ]
+    selected_databases = get_checked_sql_databases()
 
     if selected_databases:
         return selected_databases
@@ -1979,6 +2231,12 @@ def get_selected_sql_databases():
         return [db.strip() for db in typed_db.split(",") if db.strip()]
 
     return []
+
+def get_checked_sql_databases():
+    return [
+        db for db, var in sql_database_vars.items()
+        if var.get()
+    ]
 
 def update_schedule_list():
     schedule_listbox.delete(0, END)
@@ -1994,7 +2252,14 @@ def update_schedule_list():
             days = ", ".join(schedule.get("days", []))
 
             if schedule.get("mode") == "interval":
-                timing = f"Every {schedule.get('interval_minutes', 10)} min"
+                recurrence = schedule.get("recurrence", "minutes")
+
+                if recurrence == "minutes":
+                    timing = f"Every {schedule.get('interval_minutes', 10)} min"
+                elif recurrence == "biweekly":
+                    timing = f"Bi-weekly at {schedule.get('time', '')}"
+                else:
+                    timing = f"{recurrence.title()} at {schedule.get('time', '')}"
             else:
                 timing = schedule.get("time", "")
 
@@ -2049,21 +2314,9 @@ def add_backup_time():
     )
 
 def add_office_auto_backup_schedule():
-    selected_schedule_days = [day for day, var in selected_days.items() if var.get()]
-
-    if not selected_schedule_days:
-        messagebox.showwarning("No Days Selected", "Select at least one backup day.")
-        return
-
-    try:
-        interval_minutes = int(auto_backup_interval_var.get())
-    except ValueError:
-        messagebox.showwarning("Invalid Interval", "Enter a whole number of minutes.")
-        return
-
-    if interval_minutes < 1:
-        messagebox.showwarning("Invalid Interval", "Interval must be at least 1 minute.")
-        return
+    selected_schedule_days = [day for day, var in auto_selected_days.items() if var.get()]
+    recurrence = auto_backup_recurrence_var.get()
+    uses_office_files = auto_office_schedule_var.get()
 
     destination = auto_backup_destination_var.get().strip()
 
@@ -2071,24 +2324,72 @@ def add_office_auto_backup_schedule():
         messagebox.showwarning("No Auto Destination", "Choose an auto backup location first.")
         return
 
+    if not uses_office_files and not auto_selected_items:
+        messagebox.showwarning("No Items", "Add files or folders in the Automate tab first.")
+        return
+
+    if recurrence in ("Daily", "Weekly", "Bi-weekly") and not selected_schedule_days:
+        messagebox.showwarning("No Days Selected", "Select at least one backup day.")
+        return
+
+    backup_time = f"{int(auto_hours_var.get())}:{auto_minutes_var.get()} {auto_ampm_var.get()}"
+    recurrence_key = {
+        "Every X minutes": "minutes",
+        "Daily": "daily",
+        "Weekly": "weekly",
+        "Bi-weekly": "biweekly",
+        "Monthly": "monthly"
+    }.get(recurrence, "minutes")
+
+    if recurrence_key == "minutes":
+        try:
+            interval_minutes = int(auto_backup_interval_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid Interval", "Enter a whole number of minutes.")
+            return
+
+        if interval_minutes < 1:
+            messagebox.showwarning("Invalid Interval", "Interval must be at least 1 minute.")
+            return
+
     new_schedule = {
-        "name": schedule_name_var.get().strip() or "Office Auto Backup",
+        "name": auto_schedule_name_var.get().strip() or ("Office Auto Backup" if uses_office_files else "Auto Backup"),
         "mode": "interval",
-        "source": "office_files",
-        "interval_minutes": interval_minutes,
+        "source": "office_files" if uses_office_files else "selected_items",
+        "recurrence": recurrence_key,
         "destination": destination,
-        "description": "Common office files from Desktop, Documents, Downloads, and OneDrive",
+        "description": auto_schedule_description_var.get().strip() or "Automatic backup",
         "days": selected_schedule_days
     }
+
+    if recurrence_key == "minutes":
+        new_schedule["interval_minutes"] = interval_minutes
+    else:
+        new_schedule["time"] = backup_time
+
+    if recurrence_key == "monthly":
+        try:
+            month_day = int(auto_month_day_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid Month Day", "Enter a day of month from 1 to 31.")
+            return
+
+        if month_day < 1 or month_day > 31:
+            messagebox.showwarning("Invalid Month Day", "Enter a day of month from 1 to 31.")
+            return
+
+        new_schedule["month_day"] = month_day
+        new_schedule["days"] = []
+
+    if not uses_office_files:
+        new_schedule["items"] = list(auto_selected_items)
 
     scheduled_backup_times.append(new_schedule)
 
     update_schedule_list()
     save_app_settings()
 
-    write_scheduler_status(
-        f"Office auto backup schedule added: every {interval_minutes} minute(s)"
-    )
+    write_scheduler_status(f"Auto backup schedule added: {new_schedule['name']}")
 
 def remove_selected_time():
     selected = schedule_listbox.curselection()
@@ -2297,7 +2598,7 @@ def discover_sql_servers():
         root.after(
             0,
             lambda: btn_find_servers.config(
-                text="Find SQL Servers",
+                text="Search Database",
                 state=NORMAL
             )
         )
@@ -2435,6 +2736,530 @@ def configure_main_window():
     root.geometry(f"{window_width}x{window_height}+{x}+{y}")
     root.minsize(900, 640)
 
+def draw_rounded_rectangle(canvas, x1, y1, x2, y2, radius, fill, outline, width=1, tags=None):
+    radius = min(radius, max(0, (x2 - x1) / 2), max(0, (y2 - y1) / 2))
+    points = [
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1,
+        x1 + radius, y1
+    ]
+    canvas.create_polygon(points, fill=fill, outline="", smooth=True, splinesteps=24, tags=tags)
+
+    if outline and width:
+        canvas.create_line(
+            points,
+            fill=outline,
+            width=width,
+            smooth=True,
+            splinesteps=24,
+            joinstyle=ROUND,
+            tags=tags
+        )
+
+class RoundedButton(Canvas):
+    def __init__(self, master=None, **kwargs):
+        self.command = kwargs.pop("command", None)
+        self.text = kwargs.pop("text", "")
+        self.button_state = kwargs.pop("state", NORMAL)
+        self.style_name = kwargs.pop("style", "TButton")
+        width = kwargs.pop("width", BTN_WIDTH)
+        kwargs.pop("padding", None)
+
+        try:
+            pixel_width = max(120, int(width) * 10)
+        except (TypeError, ValueError):
+            pixel_width = 150
+
+        pixel_height = 39 if self.style_name != "Accent.TButton" else 43
+
+        super().__init__(
+            master,
+            width=pixel_width,
+            height=pixel_height,
+            bg=CARD,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            **kwargs
+        )
+
+        self.is_hovered = False
+        self.is_pressed = False
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Configure>", lambda event: self._draw())
+        self._draw()
+
+    def _draw(self):
+        canvas_width = max(self.winfo_width(), 1)
+        canvas_height = max(self.winfo_height(), 1)
+        is_disabled = self.button_state in (DISABLED, "disabled")
+        is_ready = self.style_name == "Ready.TButton"
+        is_success = self.style_name == "Success.TButton"
+
+        if is_success and not is_disabled:
+            fill = "#2e7d32"
+        elif is_ready and not is_disabled:
+            fill = ACCENT
+        else:
+            fill = CARD_DARK
+
+        if (self.is_hovered or self.is_pressed) and not is_disabled:
+            if is_success:
+                fill = "#256629"
+            elif is_ready:
+                fill = ACCENT_HOVER
+            else:
+                fill = THEMES[THEME_MODE]["hover"]
+
+        outline = "#6b6f78" if is_disabled else TEXT
+        text_color = MUTED if is_disabled else TEXT
+
+        self.delete("all")
+        draw_rounded_rectangle(
+            self,
+            2,
+            2,
+            canvas_width - 2,
+            canvas_height - 2,
+            9,
+            fill,
+            outline,
+            1,
+            "button_shape"
+        )
+        self.create_text(
+            canvas_width / 2,
+            canvas_height / 2,
+            text=self.text,
+            anchor="center",
+            fill=text_color,
+            font=("Segoe UI", 10, "bold")
+        )
+
+    def _on_press(self, event):
+        if self.button_state in (DISABLED, "disabled"):
+            return
+
+        self.is_pressed = True
+        self._draw()
+
+    def _on_release(self, event):
+        if self.button_state in (DISABLED, "disabled"):
+            return
+
+        was_pressed = self.is_pressed
+        self.is_pressed = False
+        self._draw()
+
+        if was_pressed and self.command:
+            self.command()
+
+    def _on_enter(self, event):
+        self.is_hovered = True
+        self._draw()
+
+    def _on_leave(self, event):
+        self.is_hovered = False
+        self.is_pressed = False
+        self._draw()
+
+    def config(self, cnf=None, **kwargs):
+        if cnf:
+            kwargs.update(cnf)
+
+        if "text" in kwargs:
+            self.text = kwargs.pop("text")
+
+        if "command" in kwargs:
+            self.command = kwargs.pop("command")
+
+        if "state" in kwargs:
+            self.button_state = kwargs.pop("state")
+
+        if "style" in kwargs:
+            self.style_name = kwargs.pop("style")
+
+        if "width" in kwargs:
+            try:
+                super().config(width=max(120, int(kwargs.pop("width")) * 10))
+            except (TypeError, ValueError):
+                kwargs.pop("width", None)
+
+        if kwargs:
+            super().config(**kwargs)
+
+        self._draw()
+
+    configure = config
+
+    def cget(self, key):
+        if key == "text":
+            return self.text
+
+        if key == "command":
+            return self.command
+
+        if key == "state":
+            return self.button_state
+
+        return super().cget(key)
+
+    def invoke(self):
+        if self.button_state not in (DISABLED, "disabled") and self.command:
+            return self.command()
+
+        return None
+
+ttk.Button = RoundedButton
+
+def get_palette_values():
+    values = set()
+
+    for palette in THEMES.values():
+        values.update(palette.values())
+
+    values.update({
+        "#1f1f1f",
+        "#ffffff",
+        "#2d2d2d",
+        "#3a3a3a"
+    })
+    return values
+
+def apply_theme_to_existing_widgets(widget):
+    old_palette_values = get_palette_values()
+
+    try:
+        background = widget.cget("background")
+        if background in old_palette_values:
+            widget.configure(background=BG)
+    except (TclError, AttributeError):
+        pass
+
+    try:
+        foreground = widget.cget("foreground")
+        if foreground in old_palette_values:
+            widget.configure(foreground=TEXT)
+    except (TclError, AttributeError):
+        pass
+
+    if isinstance(widget, RoundedButton):
+        widget.configure(bg=CARD)
+        widget._draw()
+    elif isinstance(widget, Canvas):
+        try:
+            widget.configure(bg=BG)
+        except TclError:
+            pass
+    elif isinstance(widget, Listbox):
+        widget.configure(bg=CARD_DARK, fg=TEXT, selectbackground=ACCENT, selectforeground="#ffffff")
+    elif isinstance(widget, Text):
+        widget.configure(bg=CARD_DARK, fg=TEXT, insertbackground=TEXT)
+
+    for child in widget.winfo_children():
+        apply_theme_to_existing_widgets(child)
+
+def set_theme_mode(mode):
+    global THEME_MODE, BG, CARD, CARD_DARK, TEXT, MUTED
+
+    THEME_MODE = mode
+    palette = THEMES[THEME_MODE]
+    BG = palette["bg"]
+    CARD = palette["card"]
+    CARD_DARK = palette["card_dark"]
+    TEXT = palette["text"]
+    MUTED = palette["muted"]
+
+    apply_modern_style()
+    apply_theme_to_existing_widgets(root)
+
+    if "btn_theme_toggle" in globals():
+        btn_theme_toggle.config(text="☾" if THEME_MODE == "light" else "☼")
+
+    update_main_notebook_shell()
+    update_main_tab_buttons()
+    update_scheduler_subtab_buttons()
+    update_cloud_subtab_buttons()
+    update_cloud_action_buttons()
+
+def toggle_theme_mode():
+    set_theme_mode("light" if THEME_MODE == "dark" else "dark")
+
+def update_main_notebook_shell(event=None):
+    if "notebook_shell" not in globals():
+        return
+
+    notebook_shell.update_idletasks()
+    shell_width = notebook_shell.winfo_width()
+    shell_height = notebook_shell.winfo_height()
+
+    if shell_width <= 2 or shell_height <= 2:
+        return
+
+    inset = 3
+    content_inset = inset + 2
+    notebook_shell.delete("rounded_notebook_shell")
+    draw_rounded_rectangle(
+        notebook_shell,
+        inset,
+        inset,
+        shell_width - inset,
+        shell_height - inset,
+        14,
+        CARD,
+        THEMES[THEME_MODE]["shell"],
+        1,
+        "rounded_notebook_shell"
+    )
+    notebook_shell.tag_lower("rounded_notebook_shell")
+    notebook_shell.coords(notebook_shell_window, content_inset, content_inset)
+    notebook_shell.itemconfigure(
+        notebook_shell_window,
+        width=max(1, shell_width - (content_inset * 2)),
+        height=max(1, shell_height - (content_inset * 2))
+    )
+
+def draw_main_tab_button(tab_button, hovered=False):
+    canvas = tab_button["canvas"]
+
+    if "notebook" not in globals():
+        return
+
+    canvas.configure(bg=CARD)
+    canvas.update_idletasks()
+    canvas_width = max(canvas.winfo_width(), 1)
+    canvas_height = max(canvas.winfo_height(), 1)
+    is_selected = notebook.select() == str(tab_button["tab"])
+    fill = ACCENT if is_selected else (THEMES[THEME_MODE]["hover"] if hovered else CARD_DARK)
+    outline = TEXT
+    text_color = TEXT if is_selected or hovered else TEXT
+
+    canvas.delete("all")
+    draw_rounded_rectangle(
+        canvas,
+        2,
+        2,
+        canvas_width - 2,
+        canvas_height - 2,
+        10,
+        fill,
+        outline,
+        1,
+        "main_tab_shape"
+    )
+    canvas.create_text(
+        canvas_width / 2,
+        canvas_height / 2,
+        text=tab_button["text"],
+        anchor="center",
+        fill=text_color,
+        font=("Segoe UI", 10, "bold")
+    )
+
+def update_main_tab_buttons(event=None):
+    for tab_button in main_tab_buttons:
+        draw_main_tab_button(tab_button)
+
+def select_main_tab(tab):
+    notebook.select(tab)
+    update_main_tab_buttons()
+
+def create_main_tab_button(parent, text, tab):
+    canvas = Canvas(
+        parent,
+        width=158,
+        height=44,
+        bg=CARD,
+        highlightthickness=0,
+        bd=0,
+        cursor="hand2"
+    )
+    canvas.pack(fill=X, pady=(0, 8))
+
+    tab_button = {
+        "canvas": canvas,
+        "text": text,
+        "tab": tab
+    }
+    main_tab_buttons.append(tab_button)
+
+    canvas.bind("<Button-1>", lambda event, target=tab: select_main_tab(target))
+    canvas.bind("<Enter>", lambda event, button=tab_button: draw_main_tab_button(button, True))
+    canvas.bind("<Leave>", lambda event, button=tab_button: draw_main_tab_button(button, False))
+    canvas.bind("<Configure>", lambda event, button=tab_button: draw_main_tab_button(button))
+    draw_main_tab_button(tab_button)
+
+    return canvas
+
+def draw_scheduler_subtab_button(tab_button, hovered=False):
+    canvas = tab_button["canvas"]
+
+    if "scheduler_subtabs" not in globals():
+        return
+
+    canvas.configure(bg=BG)
+    canvas.update_idletasks()
+    canvas_width = max(canvas.winfo_width(), 1)
+    canvas_height = max(canvas.winfo_height(), 1)
+    is_selected = scheduler_subtabs.select() == str(tab_button["tab"])
+    fill = ACCENT if is_selected else (THEMES[THEME_MODE]["hover"] if hovered else CARD_DARK)
+    outline = TEXT
+    text_color = TEXT if is_selected or hovered else TEXT
+
+    canvas.delete("all")
+    draw_rounded_rectangle(
+        canvas,
+        2,
+        2,
+        canvas_width - 2,
+        canvas_height - 2,
+        10,
+        fill,
+        outline,
+        1,
+        "scheduler_subtab_shape"
+    )
+    canvas.create_text(
+        canvas_width / 2,
+        canvas_height / 2,
+        text=tab_button["text"],
+        anchor="center",
+        fill=text_color,
+        font=("Segoe UI", 10, "bold" if is_selected else "normal")
+    )
+
+def update_scheduler_subtab_buttons(event=None):
+    for tab_button in scheduler_subtab_buttons:
+        draw_scheduler_subtab_button(tab_button)
+
+def select_scheduler_subtab(tab):
+    scheduler_subtabs.select(tab)
+    update_scheduler_subtab_buttons()
+    update_scheduler_scroll_region()
+
+def create_scheduler_subtab_button(parent, text, tab):
+    canvas = Canvas(
+        parent,
+        width=170,
+        height=42,
+        bg=BG,
+        highlightthickness=0,
+        bd=0,
+        cursor="hand2"
+    )
+    canvas.pack(side=LEFT, padx=(0, 8))
+
+    tab_button = {
+        "canvas": canvas,
+        "text": text,
+        "tab": tab
+    }
+    scheduler_subtab_buttons.append(tab_button)
+
+    canvas.bind("<Button-1>", lambda event, target=tab: select_scheduler_subtab(target))
+    canvas.bind("<Enter>", lambda event, button=tab_button: draw_scheduler_subtab_button(button, True))
+    canvas.bind("<Leave>", lambda event, button=tab_button: draw_scheduler_subtab_button(button, False))
+    canvas.bind("<Configure>", lambda event, button=tab_button: draw_scheduler_subtab_button(button))
+    draw_scheduler_subtab_button(tab_button)
+
+    return canvas
+
+def draw_cloud_subtab_button(tab_button, hovered=False):
+    canvas = tab_button["canvas"]
+
+    if "cloud_subtabs" not in globals():
+        return
+
+    canvas.configure(bg=BG)
+    canvas.update_idletasks()
+    canvas_width = max(canvas.winfo_width(), 1)
+    canvas_height = max(canvas.winfo_height(), 1)
+    is_selected = cloud_subtabs.select() == str(tab_button["tab"])
+    fill = ACCENT if is_selected else (THEMES[THEME_MODE]["hover"] if hovered else CARD_DARK)
+    outline = TEXT
+
+    canvas.delete("all")
+    draw_rounded_rectangle(
+        canvas,
+        2,
+        2,
+        canvas_width - 2,
+        canvas_height - 2,
+        10,
+        fill,
+        outline,
+        1,
+        "cloud_subtab_shape"
+    )
+    canvas.create_text(
+        canvas_width / 2,
+        canvas_height / 2,
+        text=tab_button["text"],
+        anchor="center",
+        fill=TEXT,
+        font=("Segoe UI", 10, "bold")
+    )
+
+def update_cloud_subtab_buttons(event=None):
+    for tab_button in cloud_subtab_buttons:
+        draw_cloud_subtab_button(tab_button)
+
+def select_cloud_subtab(tab):
+    if "cloud_subtabs" not in globals():
+        return
+
+    cloud_subtabs.select(tab)
+    update_cloud_subtab_buttons()
+    update_cloud_action_buttons()
+
+def go_to_cloud_schedule_if_sql_ready():
+    if not get_checked_sql_databases():
+        messagebox.showwarning("No Databases Selected", "Select at least one SQL database first.")
+        update_cloud_action_buttons()
+        return
+
+    select_cloud_subtab(cloud_scheduler_tab)
+
+def create_cloud_subtab_button(parent, text, tab):
+    canvas = Canvas(
+        parent,
+        width=230,
+        height=42,
+        bg=BG,
+        highlightthickness=0,
+        bd=0,
+        cursor="hand2"
+    )
+    canvas.pack(side=LEFT, padx=(0, 8))
+
+    tab_button = {
+        "canvas": canvas,
+        "text": text,
+        "tab": tab
+    }
+    cloud_subtab_buttons.append(tab_button)
+
+    canvas.bind("<Button-1>", lambda event, target=tab: select_cloud_subtab(target))
+    canvas.bind("<Enter>", lambda event, button=tab_button: draw_cloud_subtab_button(button, True))
+    canvas.bind("<Leave>", lambda event, button=tab_button: draw_cloud_subtab_button(button, False))
+    canvas.bind("<Configure>", lambda event, button=tab_button: draw_cloud_subtab_button(button))
+    draw_cloud_subtab_button(tab_button)
+
+    return canvas
+
 def backup_mysql_database(host, user, password, database, output_file):
     command = [
         "mysqldump",
@@ -2450,6 +3275,9 @@ def backup_mysql_database(host, user, password, database, output_file):
 def test_sql_connection():
     server = sql_server_var.get().strip()
 
+    if "btn_test_sql" in globals():
+        btn_test_sql.config(style="Accent.TButton")
+
     if not server:
         messagebox.showwarning("Missing Server", "Enter SQL Server name.")
         return
@@ -2464,8 +3292,10 @@ def test_sql_connection():
 
     try:
         subprocess.run(command, capture_output=True, text=True, check=True)
+        btn_test_sql.config(style="Success.TButton")
         messagebox.showinfo("SQL Connection", "SQL Server connection successful.")
     except Exception as e:
+        btn_test_sql.config(style="Accent.TButton")
         messagebox.showerror("SQL Connection Failed", str(e))
 
 def backup_single_sql_database(database, show_messages=True):
@@ -2682,6 +3512,11 @@ def show_database_selection_window(database_names):
         )
 
         close_database_selection_window()
+        update_sql_database_button_state()
+        update_cloud_action_buttons()
+
+        if selected_databases:
+            select_cloud_subtab(cloud_scheduler_tab)
 
     button_row = ttk.Frame(db_window)
     button_row.pack(fill=X, padx=15, pady=(0, 15))
@@ -2738,6 +3573,7 @@ def connect_google_drive():
     )
 
     google_drive_status_var.set("Google Drive Connected")
+    update_cloud_next_button_state()
 
     messagebox.showinfo(
         "Google Drive",
@@ -2856,6 +3692,7 @@ def disconnect_google_drive():
 
         google_drive_service = None
         google_drive_status_var.set("Not Connected")
+        update_cloud_next_button_state()
 
         messagebox.showinfo(
             "Google Drive",
@@ -2875,6 +3712,8 @@ def refresh_google_drive_status():
         google_drive_status_var.set("Google Drive Connected")
     else:
         google_drive_status_var.set("Not Connected")
+
+    update_cloud_next_button_state()
 
 def toggle_run_on_startup():
     if run_on_startup_var.get():
@@ -2971,6 +3810,9 @@ def add_cloud_backup_items():
         save_app_settings()
         selection_window.destroy()
 
+        if files:
+            select_cloud_subtab(cloud_sql_tab)
+
     def select_folder():
         folder = filedialog.askdirectory(parent=selection_window)
 
@@ -2980,6 +3822,9 @@ def add_cloud_backup_items():
         update_cloud_selection_count()
         save_app_settings()
         selection_window.destroy()
+
+        if folder:
+            select_cloud_subtab(cloud_sql_tab)
 
     ttk.Button(
         button_row,
@@ -3089,6 +3934,7 @@ def start_cloud_scheduler():
         "Cloud backup scheduler is now running."
     )
     check_cloud_scheduled_backups(schedule_next=False)
+    update_cloud_action_buttons()
 
 def stop_cloud_scheduler():
     global cloud_scheduler_running
@@ -3097,6 +3943,59 @@ def stop_cloud_scheduler():
     cloud_status_var.set("Stopped")
     cloud_schedule_enabled_var.set(False)
     refresh_schedule_tray_icon()
+    update_cloud_action_buttons()
+
+def toggle_cloud_scheduler():
+    if cloud_scheduler_running:
+        stop_cloud_scheduler()
+    else:
+        start_cloud_scheduler()
+
+def update_cloud_action_buttons():
+    if "btn_cloud_next" not in globals() or "cloud_subtabs" not in globals():
+        return
+
+    selected_tab = cloud_subtabs.select()
+
+    btn_cloud_next.grid_remove()
+    btn_cloud_toggle_schedule.grid_remove()
+    cloud_footer_status_label.grid_remove()
+
+    if selected_tab == str(cloud_scheduler_tab):
+        btn_cloud_toggle_schedule.config(
+            text="Stop Schedule" if cloud_scheduler_running else "Start Schedule",
+            style="Accent.TButton" if cloud_scheduler_running else "Ready.TButton"
+        )
+        btn_cloud_toggle_schedule.grid(row=0, column=1, sticky="e")
+        cloud_footer_status_label.grid(row=1, column=1, sticky="e", pady=(6, 0))
+        return
+
+    if selected_tab == str(cloud_sql_tab):
+        has_databases = len(get_checked_sql_databases()) > 0
+        btn_cloud_next.config(
+            command=go_to_cloud_schedule_if_sql_ready,
+            style="Ready.TButton" if has_databases else "Accent.TButton"
+        )
+    else:
+        google_connected = google_drive_status_var.get() == "Google Drive Connected"
+        has_cloud_items = len(cloud_selected_items) > 0
+        btn_cloud_next.config(
+            command=lambda: select_cloud_subtab(cloud_sql_tab),
+            style="Ready.TButton" if google_connected and has_cloud_items else "Accent.TButton"
+        )
+
+    btn_cloud_next.grid(row=0, column=1, sticky="e")
+
+def update_cloud_next_button_state():
+    update_cloud_action_buttons()
+
+def update_sql_database_button_state():
+    if "btn_load_databases" not in globals():
+        return
+
+    btn_load_databases.config(
+        style="Success.TButton" if len(get_checked_sql_databases()) > 0 else "Accent.TButton"
+    )
 
 def update_cloud_selection_count():
     if "cloud_items_listbox" in globals():
@@ -3108,6 +4007,7 @@ def update_cloud_selection_count():
     cloud_selected_count_var.set(
         f"{len(cloud_selected_items)} cloud item(s) selected"
     )
+    update_cloud_next_button_state()
 
 def update_office_preset_caption():
     if office_schedule_var.get():
@@ -3115,25 +4015,126 @@ def update_office_preset_caption():
             "Office preset saves Word, Excel, PowerPoint, PDF, text/CSV/RTF, OneNote, and Outlook files from Desktop, Documents, Downloads, and OneDrive."
         )
     else:
-        office_preset_caption_var.set("")
+        office_preset_caption_var.set("Selected items saves the files and folders listed below.")
 
 def refresh_scheduler_sections():
-    if "scheduler_paned" not in globals():
+    update_scheduler_scroll_region()
+
+def set_scheduler_layout(layout_name):
+    scheduler_layout_var.set(layout_name)
+    refresh_scheduler_sections()
+
+def update_scheduler_tab_layout(event=None):
+    if "scheduler_content" not in globals():
         return
 
-    for pane in scheduler_paned.panes():
-        scheduler_paned.forget(pane)
+    refresh_scheduler_sections()
+    update_scheduler_item_buttons_layout()
+    update_scheduler_days_layout()
+    update_scheduler_control_layout()
 
-    min_sizes = {
-        "manual": 360,
-        "auto": 300
-    }
+def update_scheduler_item_buttons_layout(event=None):
+    if "scheduler_items_button_row" not in globals():
+        return
 
-    for section_key in scheduler_section_order:
-        section = scheduler_section_widgets.get(section_key)
+    width = scheduler_items_button_row.winfo_width()
+    columns = 1 if width < 460 else 4
+    arrange_responsive_button_grid(
+        scheduler_items_button_row,
+        [
+            btn_add_scheduler_files,
+            btn_add_scheduler_folder,
+            btn_remove_scheduler_item,
+            btn_clear_scheduler_items
+        ],
+        columns
+    )
 
-        if section:
-            scheduler_paned.add(section, minsize=min_sizes.get(section_key, 100))
+    if "schedule_items_button_row" in globals():
+        schedule_width = schedule_items_button_row.winfo_width()
+        arrange_responsive_button_grid(
+            schedule_items_button_row,
+            [
+                btn_add_schedule_files,
+                btn_add_schedule_folder,
+                btn_remove_schedule_item,
+                btn_clear_schedule_items
+            ],
+            1 if schedule_width < 460 else 4
+        )
+
+    if "auto_scheduler_items_button_row" in globals():
+        auto_width = auto_scheduler_items_button_row.winfo_width()
+        arrange_responsive_button_grid(
+            auto_scheduler_items_button_row,
+            [
+                btn_add_auto_scheduler_files,
+                btn_add_auto_scheduler_folder,
+                btn_remove_auto_scheduler_item,
+                btn_clear_auto_scheduler_items
+            ],
+            1 if auto_width < 460 else 4
+        )
+
+def update_scheduler_control_layout(event=None):
+    if "manual_button_row" not in globals() or "scheduler_button_group" not in globals():
+        return
+
+    arrange_responsive_button_grid(
+        manual_button_row,
+        [btn_add_time, btn_remove_time],
+        1 if manual_button_row.winfo_width() < 330 else 2
+    )
+    arrange_responsive_button_grid(
+        scheduler_button_group,
+        [btn_start_scheduler, btn_stop_scheduler],
+        1 if scheduler_button_group.winfo_width() < 330 else 2
+    )
+
+def update_scheduler_days_layout(event=None):
+    if "days_frame" not in globals():
+        return
+
+    width = days_frame.winfo_width()
+    max_columns = 4 if width < 520 else 8
+
+    for index, (day, var) in enumerate(selected_days.items()):
+        checkbutton = scheduler_day_checkbuttons[day]
+        row = 1 + index // max_columns
+        column = index % max_columns
+        checkbutton.grid(row=row, column=column, sticky="w", padx=(0, 10), pady=(4, 0))
+
+    if "auto_days_frame" in globals():
+        auto_width = auto_days_frame.winfo_width()
+        auto_max_columns = 4 if auto_width < 520 else 8
+
+        for index, (day, var) in enumerate(auto_selected_days.items()):
+            checkbutton = auto_scheduler_day_checkbuttons[day]
+            row = 1 + index // auto_max_columns
+            column = index % auto_max_columns
+            checkbutton.grid(row=row, column=column, sticky="w", padx=(0, 10), pady=(4, 0))
+
+def update_auto_recurrence_fields(event=None):
+    if "auto_interval_group" not in globals():
+        return
+
+    recurrence = auto_backup_recurrence_var.get()
+
+    if recurrence == "Every X minutes":
+        auto_interval_group.grid()
+        auto_time_group.grid_remove()
+        auto_month_day_group.grid_remove()
+        auto_days_frame.grid()
+    elif recurrence == "Monthly":
+        auto_interval_group.grid_remove()
+        auto_time_group.grid()
+        auto_month_day_group.grid()
+        auto_days_frame.grid_remove()
+    else:
+        auto_interval_group.grid_remove()
+        auto_time_group.grid()
+        auto_month_day_group.grid_remove()
+        auto_days_frame.grid()
 
     update_scheduler_scroll_region()
 
@@ -3190,9 +4191,7 @@ def create_scheduler_section_header(parent, section_key, title):
     ttk.Label(
         header,
         text=title,
-        background=CARD,
-        foreground=TEXT,
-        font=("Segoe UI", 12, "bold")
+        style="CardTitle.TLabel"
     ).grid(row=0, column=0, sticky="w")
 
     return header
@@ -3367,7 +4366,7 @@ def update_sql_card_layout(event=None):
     width = sql_button_row.winfo_width()
     arrange_responsive_button_grid(
         sql_button_row,
-        [btn_find_servers, btn_test_sql, btn_load_databases],
+        [btn_load_databases, btn_test_sql, btn_find_servers],
         1 if width < 470 else 3
     )
 
@@ -3437,6 +4436,16 @@ selected_days = {
     "Sun": BooleanVar(value=True),
 }
 
+auto_selected_days = {
+    "Mon": BooleanVar(value=True),
+    "Tue": BooleanVar(value=True),
+    "Wed": BooleanVar(value=True),
+    "Thu": BooleanVar(value=True),
+    "Fri": BooleanVar(value=True),
+    "Sat": BooleanVar(value=True),
+    "Sun": BooleanVar(value=True),
+}
+
 cloud_selected_days = {
     "Mon": BooleanVar(value=True),
     "Tue": BooleanVar(value=True),
@@ -3464,6 +4473,7 @@ auto_backup_destination_var = StringVar()
 format_var = StringVar(value="zip")
 sql_server_var = StringVar(value=r".\SQLEXPRESS")
 sql_database_var = StringVar(value="BackupCompressorTest")
+sql_database_var.trace_add("write", lambda *args: update_cloud_action_buttons())
 sql_database_vars = {}
 sql_include_scheduler_var = BooleanVar(value=False)
 sql_selected_count_var = StringVar(value="0 databases selected")
@@ -3490,7 +4500,17 @@ schedule_description_var = StringVar(value="Files/Folders backup")
 office_schedule_var = BooleanVar(value=False)
 office_preset_caption_var = StringVar(value="")
 auto_backup_interval_var = StringVar(value="10")
+auto_backup_recurrence_var = StringVar(value="Every X minutes")
+auto_schedule_name_var = StringVar(value="Auto Backup")
+auto_schedule_description_var = StringVar(value="Automatic backup")
+auto_office_schedule_var = BooleanVar(value=False)
+auto_hours_var = StringVar(value="12")
+auto_minutes_var = StringVar(value="00")
+auto_ampm_var = StringVar(value="AM")
+auto_month_day_var = StringVar(value="1")
 scheduler_selected_count_var = StringVar(value="0 file(s), 0 folder(s) selected")
+auto_selected_count_var = StringVar(value="0 file(s), 0 folder(s) selected")
+scheduler_layout_var = StringVar(value="Balanced split")
 
 progress_var = DoubleVar(value=0)
 status_var = StringVar(value="Ready")
@@ -3504,11 +4524,32 @@ dashboard_google_var = StringVar(value="Not Connected")
 dashboard_storage_var = StringVar(value="Destination not set")
 
 # Main tab container.
-notebook = ttk.Notebook(root)
+notebook_shell = Canvas(
+    root,
+    bg=BG,
+    highlightthickness=0,
+    bd=0
+)
+notebook_shell.pack(fill=BOTH, expand=True, padx=15, pady=15)
+notebook_shell_inner = ttk.Frame(notebook_shell, style="Card.TFrame")
+notebook_shell_window = notebook_shell.create_window(
+    (5, 5),
+    window=notebook_shell_inner,
+    anchor="nw"
+)
+notebook_shell.bind("<Configure>", update_main_notebook_shell)
 
+main_tabs_layout = ttk.Frame(notebook_shell_inner, style="Card.TFrame")
+main_tabs_layout.pack(fill=BOTH, expand=True)
+
+main_tabs_nav = ttk.Frame(main_tabs_layout, style="Card.TFrame", width=170)
+main_tabs_nav.pack(side=LEFT, fill=Y, padx=(8, 10), pady=8)
+main_tabs_nav.pack_propagate(False)
+
+notebook = ttk.Notebook(main_tabs_layout)
 notebook.pack_propagate(False)
-notebook.configure(style="TNotebook")
-notebook.pack(fill=BOTH, expand=True, padx=15, pady=15)
+notebook.configure(style="Content.TNotebook")
+notebook.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 8), pady=8)
 
 dashboard_tab = ttk.Frame(notebook, padding=20)
 backup_tab = ttk.Frame(notebook, padding=20)
@@ -3518,10 +4559,32 @@ logs_tab = ttk.Frame(notebook, padding=20)
 
 # Notebook tabs.
 notebook.add(backup_tab, text="Backup")
-notebook.add(scheduler_tab, text="Scheduler")
+notebook.add(scheduler_tab, text="Schedule")
 notebook.add(settings_tab, text="Cloud Backup")
 notebook.add(dashboard_tab, text="Dashboard")
 notebook.add(logs_tab, text="Logs")
+notebook.bind("<<NotebookTabChanged>>", update_main_tab_buttons)
+
+for tab_text, tab_frame in (
+    ("Backup", backup_tab),
+    ("Schedule", scheduler_tab),
+    ("Cloud Backup", settings_tab),
+    ("Dashboard", dashboard_tab),
+    ("Logs", logs_tab),
+):
+    create_main_tab_button(main_tabs_nav, tab_text, tab_frame)
+
+main_tabs_spacer = ttk.Frame(main_tabs_nav, style="Card.TFrame")
+main_tabs_spacer.pack(fill=BOTH, expand=True)
+
+btn_theme_toggle = ttk.Button(
+    main_tabs_nav,
+    text="☼",
+    width=16,
+    command=toggle_theme_mode
+)
+
+root.after_idle(update_main_tab_buttons)
 
 # =========================================================
 # Dashboard Tab
@@ -3750,49 +4813,50 @@ btn_view_log.pack(side=LEFT)
 main_buttons.append(btn_view_log)
 
 # =========================================================
+# Cloud Backup Tab: Step Layout
+# =========================================================
+
+cloud_subtab_nav = ttk.Frame(settings_tab)
+cloud_subtab_nav.pack(fill=X, pady=(0, 8))
+
+cloud_subtabs = ttk.Notebook(settings_tab)
+cloud_subtabs.configure(style="Content.TNotebook")
+cloud_subtabs.pack(fill=BOTH, expand=True, pady=(0, 10))
+cloud_subtabs.bind("<<NotebookTabChanged>>", update_cloud_subtab_buttons)
+cloud_subtabs.bind("<<NotebookTabChanged>>", update_cloud_action_buttons, add="+")
+
+cloud_location_items_tab = ttk.Frame(cloud_subtabs)
+cloud_sql_tab = ttk.Frame(cloud_subtabs)
+cloud_scheduler_tab = ttk.Frame(cloud_subtabs)
+
+for cloud_subtab in (cloud_location_items_tab, cloud_sql_tab, cloud_scheduler_tab):
+    cloud_subtab.columnconfigure(0, weight=1)
+    cloud_subtab.rowconfigure(0, weight=1)
+
+cloud_subtabs.add(cloud_location_items_tab, text="Cloud")
+cloud_subtabs.add(cloud_sql_tab, text="SQL Settings")
+cloud_subtabs.add(cloud_scheduler_tab, text="Cloud Schedule")
+
+for tab_text, tab_frame in (
+    ("Cloud", cloud_location_items_tab),
+    ("SQL Settings", cloud_sql_tab),
+    ("Cloud Schedule", cloud_scheduler_tab),
+):
+    create_cloud_subtab_button(cloud_subtab_nav, tab_text, tab_frame)
+
+root.after_idle(update_cloud_subtab_buttons)
+
+# =========================================================
 # Cloud Backup Tab: File Selection
 # =========================================================
 
-cloud_vertical_split = PanedWindow(
-    settings_tab,
-    orient=VERTICAL,
-    bg=BG,
-    bd=0,
-    sashwidth=8,
-    sashrelief=FLAT,
-    showhandle=False
-)
-cloud_vertical_split.pack(fill=BOTH, expand=True)
-
-cloud_top_split = PanedWindow(
-    cloud_vertical_split,
-    orient=HORIZONTAL,
-    bg=BG,
-    bd=0,
-    sashwidth=8,
-    sashrelief=FLAT,
-    showhandle=False
-)
-
-cloud_bottom_split = PanedWindow(
-    cloud_vertical_split,
-    orient=HORIZONTAL,
-    bg=BG,
-    bd=0,
-    sashwidth=8,
-    sashrelief=FLAT,
-    showhandle=False
-)
-
-cloud_vertical_split.add(cloud_top_split, minsize=220)
-cloud_vertical_split.add(cloud_bottom_split, minsize=260)
-
-cloud_files_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+cloud_files_card = ttk.Frame(cloud_location_items_tab, style="Card.TFrame", padding=15)
+cloud_files_card.pack(fill=BOTH, expand=True, pady=(0, 10))
 
 create_cloud_section_header(
     cloud_files_card,
     "cloud_items",
-    "Selected Cloud Backup Items",
+    "Select Items Below",
     manager="pack"
 )
 
@@ -3861,19 +4925,20 @@ main_buttons.extend([
 # Cloud Backup Tab: Google Drive Location
 # =========================================================
 
-google_drive_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+google_drive_card = ttk.Frame(cloud_location_items_tab, style="Card.TFrame", padding=15)
 google_drive_card.columnconfigure(1, weight=1)
+google_drive_card.pack(fill=X, pady=(0, 10), before=cloud_files_card)
 
 create_cloud_section_header(
     google_drive_card,
     "google_drive",
-    "Google Drive Backup Location",
+    "Google Drive",
     columnspan=3
 )
 
 google_drive_folder_label = ttk.Label(
     google_drive_card,
-    text="Cloud Folder:",
+    text="File Name:",
     background=CARD,
     foreground=TEXT
 )
@@ -3926,8 +4991,9 @@ main_buttons.extend([
 # Cloud Backup Tab: SQL Settings
 # =========================================================
 
-sql_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+sql_card = ttk.Frame(cloud_sql_tab, style="Card.TFrame", padding=15)
 sql_card.columnconfigure(1, weight=1)
+sql_card.pack(fill=BOTH, expand=True, pady=(0, 10))
 
 create_cloud_section_header(
     sql_card,
@@ -3941,13 +5007,21 @@ ttk.Label(sql_card, text="Server:", background=CARD, foreground=TEXT).grid(row=1
 sql_server_entry = ttk.Entry(sql_card, textvariable=sql_server_var, width=30)
 sql_server_entry.grid(row=1, column=1, sticky="ew", pady=5)
 
+ttk.Label(
+    sql_card,
+    text="You can type the SQL Server name directly if it is not listed.",
+    style="Muted.TLabel",
+    wraplength=520,
+    justify=LEFT
+).grid(row=2, column=1, columnspan=2, sticky="w", pady=(0, 8))
+
 sql_button_row = ttk.Frame(sql_card, style="Card.TFrame")
-sql_button_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+sql_button_row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 5))
 sql_button_row.bind("<Configure>", update_sql_card_layout)
 
 btn_find_servers = ttk.Button(
     sql_button_row,
-    text="Find SQL Servers",
+    text="Search Database",
     width=BTN_WIDTH,
     command=start_sql_server_discovery
 )
@@ -3963,7 +5037,8 @@ btn_load_databases = ttk.Button(
     sql_button_row,
     text="Load Databases",
     width=BTN_WIDTH,
-    command=load_sql_databases
+    command=load_sql_databases,
+    style="Accent.TButton"
 )
 
 ttk.Label(
@@ -3972,7 +5047,7 @@ ttk.Label(
     background=CARD,
     foreground="#57f287",
     font=("Segoe UI", 9)
-).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
+).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 2))
 
 ttk.Label(
     sql_card,
@@ -3982,7 +5057,7 @@ ttk.Label(
     font=("Segoe UI", 9, "bold"),
     wraplength=760,
     justify=LEFT
-).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 8))
+).grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
 main_buttons.extend([
     btn_find_servers,
@@ -3994,13 +5069,14 @@ main_buttons.extend([
 # Cloud Backup Tab: Cloud Schedule
 # =========================================================
 
-cloud_schedule_card = ttk.Frame(settings_tab, style="Card.TFrame", padding=15)
+cloud_schedule_card = ttk.Frame(cloud_scheduler_tab, style="Card.TFrame", padding=15)
 cloud_schedule_card.columnconfigure(0, weight=0)
 cloud_schedule_card.columnconfigure(1, weight=0)
 cloud_schedule_card.columnconfigure(2, weight=0)
 cloud_schedule_card.columnconfigure(3, weight=0)
 cloud_schedule_card.columnconfigure(4, weight=1)
 cloud_schedule_card.bind("<Configure>", update_cloud_schedule_layout)
+cloud_schedule_card.pack(fill=BOTH, expand=True, pady=(0, 10))
 
 create_cloud_section_header(
     cloud_schedule_card,
@@ -4086,6 +5162,7 @@ btn_start_cloud_scheduler = ttk.Button(
     style="CompactAccent.TButton"
 )
 btn_start_cloud_scheduler.grid(row=5, column=0, sticky="w", pady=(10, 0))
+btn_start_cloud_scheduler.grid_remove()
 
 btn_stop_cloud_scheduler = ttk.Button(
     cloud_schedule_card,
@@ -4094,14 +5171,7 @@ btn_stop_cloud_scheduler = ttk.Button(
     command=stop_cloud_scheduler
 )
 btn_stop_cloud_scheduler.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-
-ttk.Label(
-    cloud_schedule_card,
-    textvariable=cloud_status_var,
-    background=CARD,
-    foreground="#57f287",
-    font=("Segoe UI", 9, "bold")
-).grid(row=5, column=2, sticky="w", padx=(10, 0), pady=(10, 0))
+btn_stop_cloud_scheduler.grid_remove()
 
 main_buttons.extend([
     btn_add_cloud_time,
@@ -4125,17 +5195,37 @@ refresh_cloud_sections()
 cloud_action_row = ttk.Frame(settings_tab)
 cloud_action_row.pack(fill=X, pady=15)
 cloud_action_row.columnconfigure(0, weight=1)
+cloud_action_row.columnconfigure(1, weight=0)
 
-btn_start_cloud_schedule = ttk.Button(
+btn_cloud_next = ttk.Button(
     cloud_action_row,
-    text="Start Local + Cloud Schedule",
+    text="Next",
     width=BTN_WIDTH + 10,
-    command=start_cloud_backup_schedule,
+    command=lambda: select_cloud_subtab(cloud_sql_tab),
     style="Accent.TButton"
 )
-btn_start_cloud_schedule.grid(row=0, column=0, sticky="e")
+btn_cloud_next.grid(row=0, column=1, sticky="e")
 
-main_buttons.append(btn_start_cloud_schedule)
+btn_cloud_toggle_schedule = ttk.Button(
+    cloud_action_row,
+    text="Start Schedule",
+    width=BTN_WIDTH + 10,
+    command=toggle_cloud_scheduler,
+    style="Ready.TButton"
+)
+
+cloud_footer_status_label = ttk.Label(
+    cloud_action_row,
+    textvariable=cloud_status_var,
+    background=BG,
+    foreground="#57f287",
+    font=("Segoe UI", 13, "bold")
+)
+
+main_buttons.extend([
+    btn_cloud_next,
+    btn_cloud_toggle_schedule
+])
 
 
 # =========================================================
@@ -4299,76 +5389,120 @@ scheduler_content_window = scheduler_canvas.create_window(
     anchor="nw"
 )
 scheduler_content.bind("<Configure>", update_scheduler_scroll_region)
+scheduler_content.bind("<Configure>", update_scheduler_tab_layout, add="+")
 scheduler_canvas.bind("<Configure>", update_scheduler_scroll_region)
 scheduler_canvas.bind("<Enter>", bind_scheduler_mousewheel)
 scheduler_canvas.bind("<Leave>", unbind_scheduler_mousewheel)
 
-scheduler_paned = PanedWindow(
-    scheduler_content,
-    orient=HORIZONTAL,
-    bg=CARD,
-    bd=0,
-    height=430,
-    width=1040,
-    sashwidth=6,
-    sashrelief=FLAT,
-    showhandle=False
-)
-scheduler_paned.pack(fill=X, pady=(0, 10))
+scheduler_toolbar = ttk.Frame(scheduler_content)
+scheduler_toolbar.pack(fill=X, pady=(0, 12))
+scheduler_toolbar.columnconfigure(0, weight=1)
 
-manual_scheduler_card = ttk.Frame(scheduler_paned, style="Card.TFrame", padding=15)
+ttk.Label(
+    scheduler_toolbar,
+    text="Schedule",
+    background=BG,
+    foreground=TEXT,
+    font=("Segoe UI", 16, "bold")
+).grid(row=0, column=0, sticky="w")
+
+scheduler_subtab_nav = ttk.Frame(scheduler_content)
+scheduler_subtab_nav.pack(fill=X, pady=(0, 8))
+
+scheduler_subtabs = ttk.Notebook(scheduler_content)
+scheduler_subtabs.pack(fill=BOTH, expand=True, pady=(0, 10))
+scheduler_subtabs.configure(style="Content.TNotebook")
+scheduler_subtabs.bind("<<NotebookTabChanged>>", update_scheduler_scroll_region)
+scheduler_subtabs.bind("<<NotebookTabChanged>>", update_scheduler_subtab_buttons, add="+")
+
+manual_scheduler_tab = ttk.Frame(scheduler_subtabs)
+auto_scheduler_tab = ttk.Frame(scheduler_subtabs)
+scheduled_scheduler_tab = ttk.Frame(scheduler_subtabs)
+
+for scheduler_subtab in (manual_scheduler_tab, auto_scheduler_tab, scheduled_scheduler_tab):
+    scheduler_subtab.columnconfigure(0, weight=1)
+    scheduler_subtab.rowconfigure(0, weight=1)
+
+scheduler_subtabs.add(auto_scheduler_tab, text="Automate")
+scheduler_subtabs.add(scheduled_scheduler_tab, text="Schedule")
+
+for tab_text, tab_frame in (
+    ("Automate", auto_scheduler_tab),
+    ("Schedule", scheduled_scheduler_tab),
+):
+    create_scheduler_subtab_button(scheduler_subtab_nav, tab_text, tab_frame)
+
+root.after_idle(update_scheduler_subtab_buttons)
+
+manual_scheduler_card = ttk.Frame(manual_scheduler_tab, style="Card.TFrame", padding=16)
 manual_scheduler_card.columnconfigure(0, weight=1)
+manual_scheduler_card.columnconfigure(1, weight=1)
+manual_scheduler_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-create_scheduler_section_header(manual_scheduler_card, "manual", "Manual Backups")
+manual_header = create_scheduler_section_header(manual_scheduler_card, "manual", "Manual Backups")
+
+ttk.Label(
+    manual_header,
+    text="Files, folders, or the Office preset at a specific time",
+    style="Muted.TLabel"
+).grid(row=1, column=0, sticky="w", pady=(3, 0))
 
 hours_var = StringVar(value="12")
 minutes_var = StringVar(value="00")
 ampm_var = StringVar(value="AM")
 
-schedule_details_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-schedule_details_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+schedule_details_frame = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+schedule_details_frame.grid(row=1, column=0, sticky="ew", padx=(0, 10), pady=(0, 10))
+schedule_details_frame.columnconfigure(0, weight=1)
 
 ttk.Label(
     schedule_details_frame,
-    text="Schedule Name:",
+    text="Schedule Name",
     background=CARD,
-    foreground=TEXT
-).pack(side=LEFT, padx=(0, 8))
+    foreground=MUTED
+).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
 ttk.Entry(
     schedule_details_frame,
     textvariable=schedule_name_var,
-    width=20
-).pack(side=LEFT, padx=(0, 14))
+    width=24
+).grid(row=1, column=0, sticky="ew")
+
+manual_source_frame = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+manual_source_frame.grid(row=1, column=1, sticky="ew", pady=(0, 10))
+
+ttk.Label(
+    manual_source_frame,
+    text="Source",
+    background=CARD,
+    foreground=MUTED
+).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
 ttk.Checkbutton(
-    schedule_details_frame,
-    text="Office file preset",
+    manual_source_frame,
+    text="Use Office file preset",
     variable=office_schedule_var,
     command=update_office_preset_caption
-).pack(side=LEFT)
+).grid(row=1, column=0, sticky="w")
 
 ttk.Label(
     manual_scheduler_card,
     textvariable=office_preset_caption_var,
-    background=CARD,
-    foreground=MUTED,
+    style="Muted.TLabel",
     wraplength=430,
     justify=LEFT
-).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
+).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
-scheduler_items_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-scheduler_items_frame.grid(row=3, column=0, columnspan=4, sticky="nsew", pady=(0, 8))
+scheduler_items_frame = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+scheduler_items_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
 scheduler_items_frame.columnconfigure(0, weight=1)
 scheduler_items_frame.rowconfigure(1, weight=1)
 manual_scheduler_card.rowconfigure(3, weight=1)
 
 ttk.Label(
     scheduler_items_frame,
-    text="Scheduler Backup Items",
-    background=CARD,
-    foreground=TEXT,
-    font=("Segoe UI", 10, "bold")
+    text="Selected Items",
+    style="CardTitle.TLabel"
 ).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
 scheduler_items_listbox = Listbox(
@@ -4394,47 +5528,42 @@ configure_auto_hide_scrollbar(
     {"row": 1, "column": 1, "sticky": "ns"}
 )
 
-scheduler_items_button_row = ttk.Frame(scheduler_items_frame, style="Card.TFrame")
-scheduler_items_button_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+scheduler_items_button_row = ttk.Frame(scheduler_items_frame, style="CardBody.TFrame")
+scheduler_items_button_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+scheduler_items_button_row.bind("<Configure>", update_scheduler_item_buttons_layout)
 
 btn_add_scheduler_files = ttk.Button(
     scheduler_items_button_row,
     text="Add Files",
     command=add_scheduler_files
 )
-btn_add_scheduler_files.pack(side=LEFT, padx=(0, 6))
 
 btn_add_scheduler_folder = ttk.Button(
     scheduler_items_button_row,
     text="Add Folder",
     command=add_scheduler_folder
 )
-btn_add_scheduler_folder.pack(side=LEFT, padx=(0, 6))
 
 btn_remove_scheduler_item = ttk.Button(
     scheduler_items_button_row,
     text="Remove Selected",
     command=remove_selected_scheduler_item
 )
-btn_remove_scheduler_item.pack(side=LEFT, padx=(0, 6))
 
 btn_clear_scheduler_items = ttk.Button(
     scheduler_items_button_row,
     text="Clear",
     command=clear_scheduler_items
 )
-btn_clear_scheduler_items.pack(side=LEFT)
 
 ttk.Label(
     scheduler_items_frame,
     textvariable=scheduler_selected_count_var,
-    background=CARD,
-    foreground=MUTED,
-    font=("Segoe UI", 9)
+    style="Muted.TLabel"
 ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
-manual_destination_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-manual_destination_row.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+manual_destination_row = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+manual_destination_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 manual_destination_row.columnconfigure(1, weight=1)
 
 ttk.Label(
@@ -4457,8 +5586,8 @@ btn_browse_manual_destination = ttk.Button(
 )
 btn_browse_manual_destination.grid(row=0, column=2, sticky="w")
 
-time_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-time_row.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 8))
+time_row = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+time_row.grid(row=5, column=0, sticky="w", padx=(0, 10), pady=(0, 10))
 
 ttk.Label(
     time_row,
@@ -4494,23 +5623,26 @@ ampm_dropdown = ttk.Combobox(
 )
 ampm_dropdown.pack(side=LEFT)
 
-days_frame = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-days_frame.grid(row=6, column=0, columnspan=4, sticky="w", pady=(0, 8))
+days_frame = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+days_frame.grid(row=5, column=1, sticky="ew", pady=(0, 10))
+days_frame.bind("<Configure>", update_scheduler_days_layout)
 
 ttk.Label(
     days_frame,
     text="Days:",
     background=CARD,
     foreground=TEXT
-).grid(row=0, column=0, padx=(0, 8))
+).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 2))
 
-for i, (day, var) in enumerate(selected_days.items(), start=1):
-    ttk.Checkbutton(days_frame, text=day, variable=var).grid(row=0, column=i, padx=3)
+scheduler_day_checkbuttons = {}
+for day, var in selected_days.items():
+    scheduler_day_checkbuttons[day] = ttk.Checkbutton(days_frame, text=day, variable=var)
 
-manual_button_row = ttk.Frame(manual_scheduler_card, style="Card.TFrame")
-manual_button_row.grid(row=7, column=0, columnspan=4, sticky="w", pady=(2, 0))
+manual_button_row = ttk.Frame(manual_scheduler_card, style="CardBody.TFrame")
+manual_button_row.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 manual_button_row.columnconfigure(0, minsize=132)
 manual_button_row.columnconfigure(1, minsize=132)
+manual_button_row.bind("<Configure>", update_scheduler_control_layout)
 
 btn_add_time = ttk.Button(
     manual_button_row,
@@ -4518,7 +5650,6 @@ btn_add_time = ttk.Button(
     command=add_backup_time,
     width=BTN_WIDTH
 )
-btn_add_time.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
 btn_remove_time = ttk.Button(
     manual_button_row,
@@ -4526,17 +5657,85 @@ btn_remove_time = ttk.Button(
     command=remove_selected_time,
     width=BTN_WIDTH
 )
-btn_remove_time.grid(row=0, column=1, sticky="ew")
 
-schedule_card = ttk.Frame(scheduler_content, style="Card.TFrame", padding=15)
+schedule_card = ttk.Frame(scheduled_scheduler_tab, style="Card.TFrame", padding=15)
 schedule_card.columnconfigure(0, weight=1)
-schedule_card.pack(fill=BOTH, expand=True, pady=(0, 10))
+schedule_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
 create_scheduler_section_header(schedule_card, "scheduled", "Scheduled Backups")
 
-schedule_list_frame = ttk.Frame(schedule_card, style="Card.TFrame")
-schedule_list_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+schedule_items_frame = ttk.Frame(schedule_card, style="CardBody.TFrame")
+schedule_items_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+schedule_items_frame.columnconfigure(0, weight=1)
+schedule_items_frame.rowconfigure(1, weight=1)
 schedule_card.rowconfigure(1, weight=1)
+
+ttk.Label(
+    schedule_items_frame,
+    text="Selected Items",
+    style="CardTitle.TLabel"
+).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+schedule_items_listbox = Listbox(
+    schedule_items_frame,
+    height=4,
+    width=60,
+    bg="#1f1f1f",
+    fg="#ffffff",
+    selectbackground="#0078d4",
+    selectforeground="#ffffff",
+    font=("Segoe UI", 9),
+    relief=FLAT,
+    selectmode=EXTENDED
+)
+schedule_items_listbox.grid(row=1, column=0, sticky="nsew")
+
+schedule_items_scrollbar = Scrollbar(schedule_items_frame)
+configure_auto_hide_scrollbar(
+    schedule_items_listbox,
+    schedule_items_scrollbar,
+    VERTICAL,
+    "grid",
+    {"row": 1, "column": 1, "sticky": "ns"}
+)
+
+schedule_items_button_row = ttk.Frame(schedule_items_frame, style="CardBody.TFrame")
+schedule_items_button_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+schedule_items_button_row.bind("<Configure>", update_scheduler_item_buttons_layout)
+
+btn_add_schedule_files = ttk.Button(
+    schedule_items_button_row,
+    text="Add Files",
+    command=add_scheduler_files
+)
+
+btn_add_schedule_folder = ttk.Button(
+    schedule_items_button_row,
+    text="Add Folder",
+    command=add_scheduler_folder
+)
+
+btn_remove_schedule_item = ttk.Button(
+    schedule_items_button_row,
+    text="Remove Selected",
+    command=remove_selected_schedule_tab_item
+)
+
+btn_clear_schedule_items = ttk.Button(
+    schedule_items_button_row,
+    text="Clear",
+    command=clear_scheduler_items
+)
+
+ttk.Label(
+    schedule_items_frame,
+    textvariable=scheduler_selected_count_var,
+    style="Muted.TLabel"
+).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+schedule_list_frame = ttk.Frame(schedule_card, style="Card.TFrame")
+schedule_list_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+schedule_card.rowconfigure(2, weight=1)
 schedule_list_frame.columnconfigure(0, weight=1)
 schedule_list_frame.rowconfigure(0, weight=1)
 
@@ -4562,13 +5761,19 @@ configure_auto_hide_scrollbar(
     {"row": 0, "column": 1, "sticky": "ns"}
 )
 
-scheduler_control_row = ttk.Frame(schedule_card, style="Card.TFrame")
-scheduler_control_row.grid(row=2, column=0, sticky="w")
-scheduler_control_row.columnconfigure(0, minsize=132)
-scheduler_control_row.columnconfigure(1, minsize=132)
+scheduler_control_row = ttk.Frame(schedule_card, style="CardBody.TFrame")
+scheduler_control_row.grid(row=3, column=0, sticky="ew")
+scheduler_control_row.columnconfigure(0, weight=1)
+scheduler_control_row.columnconfigure(1, weight=0)
+
+scheduler_button_group = ttk.Frame(scheduler_control_row, style="CardBody.TFrame")
+scheduler_button_group.grid(row=0, column=0, sticky="ew")
+scheduler_button_group.columnconfigure(0, minsize=132)
+scheduler_button_group.columnconfigure(1, minsize=132)
+scheduler_button_group.bind("<Configure>", update_scheduler_control_layout)
 
 btn_start_scheduler = ttk.Button(
-    scheduler_control_row,
+    scheduler_button_group,
     text="Start Schedule",
     width=BTN_WIDTH,
     command=start_scheduler,
@@ -4576,7 +5781,7 @@ btn_start_scheduler = ttk.Button(
 )
 
 btn_stop_scheduler = ttk.Button(
-    scheduler_control_row,
+    scheduler_button_group,
     text="Stop Schedule",
     width=BTN_WIDTH,
     command=stop_scheduler
@@ -4591,17 +5796,137 @@ status_label = ttk.Label(
     foreground=TEXT
 )
 
-btn_start_scheduler.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-btn_stop_scheduler.grid(row=0, column=1, sticky="ew")
-status_label.grid(row=0, column=2, sticky="w", padx=(10, 0))
+status_label.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
-auto_scheduler_card = ttk.Frame(scheduler_paned, style="Card.TFrame", padding=15)
+auto_scheduler_card = ttk.Frame(auto_scheduler_tab, style="Card.TFrame", padding=16)
 auto_scheduler_card.columnconfigure(0, weight=1)
+auto_scheduler_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-create_scheduler_section_header(auto_scheduler_card, "auto", "Auto Backups")
+auto_header = create_scheduler_section_header(auto_scheduler_card, "auto", "Auto Backups")
 
-auto_destination_row = ttk.Frame(auto_scheduler_card, style="Card.TFrame")
-auto_destination_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+ttk.Label(
+    auto_header,
+    text="Selected items or the Office preset on an automatic recurrence",
+    style="Muted.TLabel"
+).grid(row=1, column=0, sticky="w", pady=(3, 0))
+
+auto_settings_frame = ttk.Frame(auto_scheduler_card, style="CardBody.TFrame")
+auto_settings_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+auto_settings_frame.columnconfigure(0, weight=1)
+auto_settings_frame.columnconfigure(1, weight=1)
+
+auto_name_frame = ttk.Frame(auto_settings_frame, style="CardBody.TFrame")
+auto_name_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+auto_name_frame.columnconfigure(0, weight=1)
+
+ttk.Label(
+    auto_name_frame,
+    text="Schedule Name",
+    background=CARD,
+    foreground=MUTED
+).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+ttk.Entry(
+    auto_name_frame,
+    textvariable=auto_schedule_name_var,
+    width=24
+).grid(row=1, column=0, sticky="ew")
+
+auto_source_frame = ttk.Frame(auto_settings_frame, style="CardBody.TFrame")
+auto_source_frame.grid(row=0, column=1, sticky="ew")
+
+ttk.Label(
+    auto_source_frame,
+    text="Source",
+    background=CARD,
+    foreground=MUTED
+).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+ttk.Checkbutton(
+    auto_source_frame,
+    text="Use Office file preset",
+    variable=auto_office_schedule_var
+).grid(row=1, column=0, sticky="w")
+
+ttk.Label(
+    auto_source_frame,
+    text="Checked saves common Office files; unchecked saves the selected items below.",
+    style="Muted.TLabel",
+    wraplength=360,
+    justify=LEFT
+).grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+auto_scheduler_items_frame = ttk.Frame(auto_scheduler_card, style="CardBody.TFrame")
+auto_scheduler_items_frame.grid(row=2, column=0, columnspan=4, sticky="nsew", pady=(0, 12))
+auto_scheduler_items_frame.columnconfigure(0, weight=1)
+auto_scheduler_items_frame.rowconfigure(1, weight=1)
+auto_scheduler_card.rowconfigure(2, weight=1)
+
+ttk.Label(
+    auto_scheduler_items_frame,
+    text="Selected Items",
+    style="CardTitle.TLabel"
+).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+auto_scheduler_items_listbox = Listbox(
+    auto_scheduler_items_frame,
+    height=4,
+    width=60,
+    bg="#1f1f1f",
+    fg="#ffffff",
+    selectbackground="#0078d4",
+    selectforeground="#ffffff",
+    font=("Segoe UI", 9),
+    relief=FLAT,
+    selectmode=EXTENDED
+)
+auto_scheduler_items_listbox.grid(row=1, column=0, sticky="nsew")
+
+auto_scheduler_items_scrollbar = Scrollbar(auto_scheduler_items_frame)
+configure_auto_hide_scrollbar(
+    auto_scheduler_items_listbox,
+    auto_scheduler_items_scrollbar,
+    VERTICAL,
+    "grid",
+    {"row": 1, "column": 1, "sticky": "ns"}
+)
+
+auto_scheduler_items_button_row = ttk.Frame(auto_scheduler_items_frame, style="CardBody.TFrame")
+auto_scheduler_items_button_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+auto_scheduler_items_button_row.bind("<Configure>", update_scheduler_item_buttons_layout)
+
+btn_add_auto_scheduler_files = ttk.Button(
+    auto_scheduler_items_button_row,
+    text="Add Files",
+    command=add_auto_scheduler_files
+)
+
+btn_add_auto_scheduler_folder = ttk.Button(
+    auto_scheduler_items_button_row,
+    text="Add Folder",
+    command=add_auto_scheduler_folder
+)
+
+btn_remove_auto_scheduler_item = ttk.Button(
+    auto_scheduler_items_button_row,
+    text="Remove Selected",
+    command=remove_selected_auto_scheduler_item
+)
+
+btn_clear_auto_scheduler_items = ttk.Button(
+    auto_scheduler_items_button_row,
+    text="Clear",
+    command=clear_auto_scheduler_items
+)
+
+ttk.Label(
+    auto_scheduler_items_frame,
+    textvariable=auto_selected_count_var,
+    style="Muted.TLabel"
+).grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+auto_destination_row = ttk.Frame(auto_scheduler_card, style="CardBody.TFrame")
+auto_destination_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(0, 12))
 auto_destination_row.columnconfigure(1, weight=1)
 
 ttk.Label(
@@ -4624,18 +5949,32 @@ btn_browse_auto_destination = ttk.Button(
 )
 btn_browse_auto_destination.grid(row=0, column=2, sticky="w")
 
-auto_options_frame = ttk.Frame(auto_scheduler_card, style="Card.TFrame")
-auto_options_frame.grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
+auto_options_frame = ttk.Frame(auto_scheduler_card, style="CardBody.TFrame")
+auto_options_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(0, 10))
+auto_options_frame.columnconfigure(1, weight=1)
 
 ttk.Label(
     auto_options_frame,
-    text="Office file interval:",
+    text="Repeat:",
     background=CARD,
     foreground=TEXT
-).pack(side=LEFT, padx=(0, 6))
+).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 8))
+
+auto_recurrence_dropdown = ttk.Combobox(
+    auto_options_frame,
+    textvariable=auto_backup_recurrence_var,
+    values=["Every X minutes", "Daily", "Weekly", "Bi-weekly", "Monthly"],
+    width=16,
+    state="readonly"
+)
+auto_recurrence_dropdown.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(0, 8))
+auto_recurrence_dropdown.bind("<<ComboboxSelected>>", update_auto_recurrence_fields)
+
+auto_interval_group = ttk.Frame(auto_options_frame, style="CardBody.TFrame")
+auto_interval_group.grid(row=0, column=2, sticky="w", pady=(0, 8))
 
 ttk.Spinbox(
-    auto_options_frame,
+    auto_interval_group,
     from_=1,
     to=1440,
     textvariable=auto_backup_interval_var,
@@ -4643,31 +5982,138 @@ ttk.Spinbox(
 ).pack(side=LEFT, padx=(0, 6))
 
 ttk.Label(
-    auto_options_frame,
+    auto_interval_group,
     text="min",
     background=CARD,
     foreground=TEXT
-).pack(side=LEFT, padx=(0, 10))
+).pack(side=LEFT)
+
+auto_time_group = ttk.Frame(auto_options_frame, style="CardBody.TFrame")
+auto_time_group.grid(row=0, column=2, sticky="w", pady=(0, 8))
+
+ttk.Label(
+    auto_time_group,
+    text="At:",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 6))
+
+ttk.Combobox(
+    auto_time_group,
+    textvariable=auto_hours_var,
+    values=[f"{i:02d}" for i in range(1, 13)],
+    width=4,
+    state="readonly"
+).pack(side=LEFT, padx=(0, 2))
+
+ttk.Combobox(
+    auto_time_group,
+    textvariable=auto_minutes_var,
+    values=[f"{i:02d}" for i in range(60)],
+    width=4,
+    state="readonly"
+).pack(side=LEFT, padx=(0, 2))
+
+ttk.Combobox(
+    auto_time_group,
+    textvariable=auto_ampm_var,
+    values=["AM", "PM"],
+    width=4,
+    state="readonly"
+).pack(side=LEFT)
+
+auto_month_day_group = ttk.Frame(auto_options_frame, style="CardBody.TFrame")
+auto_month_day_group.grid(row=0, column=3, sticky="w", padx=(10, 0), pady=(0, 8))
+
+ttk.Label(
+    auto_month_day_group,
+    text="Day:",
+    background=CARD,
+    foreground=TEXT
+).pack(side=LEFT, padx=(0, 6))
+
+ttk.Spinbox(
+    auto_month_day_group,
+    from_=1,
+    to=31,
+    textvariable=auto_month_day_var,
+    width=5
+).pack(side=LEFT)
+
+auto_days_frame = ttk.Frame(auto_options_frame, style="CardBody.TFrame")
+auto_days_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+auto_days_frame.bind("<Configure>", update_scheduler_days_layout)
+
+ttk.Label(
+    auto_days_frame,
+    text="Days:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 2))
+
+auto_scheduler_day_checkbuttons = {}
+for day, var in auto_selected_days.items():
+    auto_scheduler_day_checkbuttons[day] = ttk.Checkbutton(auto_days_frame, text=day, variable=var)
+
+auto_description_frame = ttk.Frame(auto_options_frame, style="CardBody.TFrame")
+auto_description_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+auto_description_frame.columnconfigure(1, weight=1)
+
+ttk.Label(
+    auto_description_frame,
+    text="Description:",
+    background=CARD,
+    foreground=TEXT
+).grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+ttk.Entry(
+    auto_description_frame,
+    textvariable=auto_schedule_description_var,
+    width=40
+).grid(row=0, column=1, sticky="ew", padx=(0, 8))
 
 btn_add_office_auto = ttk.Button(
-    auto_options_frame,
+    auto_description_frame,
     text="Add Auto",
     command=add_office_auto_backup_schedule,
     width=BTN_WIDTH
 )
-btn_add_office_auto.pack(side=LEFT)
+btn_add_office_auto.grid(row=0, column=2, sticky="e")
+
+ttk.Label(
+    auto_scheduler_card,
+    text="Monthly backups run on the day of month set above; other recurrence options use the selected days.",
+    style="Muted.TLabel",
+    wraplength=720,
+    justify=LEFT
+).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
 scheduler_section_widgets.update({
     "manual": manual_scheduler_card,
-    "auto": auto_scheduler_card
+    "auto": auto_scheduler_card,
+    "scheduled": schedule_card
 })
 refresh_scheduler_sections()
+root.after_idle(update_scheduler_item_buttons_layout)
+root.after_idle(update_scheduler_days_layout)
+root.after_idle(update_scheduler_control_layout)
+root.after_idle(update_office_preset_caption)
+root.after_idle(update_auto_recurrence_fields)
+root.after_idle(update_scheduler_tab_layout)
 
 main_buttons.extend([
     btn_add_scheduler_files,
     btn_add_scheduler_folder,
     btn_remove_scheduler_item,
     btn_clear_scheduler_items,
+    btn_add_schedule_files,
+    btn_add_schedule_folder,
+    btn_remove_schedule_item,
+    btn_clear_schedule_items,
+    btn_add_auto_scheduler_files,
+    btn_add_auto_scheduler_folder,
+    btn_remove_auto_scheduler_item,
+    btn_clear_auto_scheduler_items,
     btn_add_time,
     btn_remove_time,
     btn_browse_manual_destination,
@@ -4704,11 +6150,14 @@ refresh_logs_tab()
 update_startup_checkbox_style()
 update_backup_summary()
 root.after_idle(update_dashboard_card_layout)
+root.after_idle(update_main_notebook_shell)
 root.after_idle(update_cloud_schedule_layout)
 root.after_idle(update_backup_tab_layout)
 root.after_idle(update_cloud_items_layout)
 root.after_idle(update_sql_card_layout)
+root.after_idle(update_sql_database_button_state)
 root.after_idle(update_google_drive_layout)
+root.after_idle(update_cloud_next_button_state)
 root.protocol("WM_DELETE_WINDOW", on_app_close)
 
 setup_tray_icon()
