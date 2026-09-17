@@ -28,7 +28,7 @@ local settings are not tracked. Run python main.py --test-mode for isolated
 settings and logs. Manual backups and uploads in testing mode are real operations.
 
 Build the application with PyInstaller using Backup Compressor.spec, then compile
-installer.iss with Inno Setup 6. The build uses app_icon_v2.ico.
+installer.iss with Inno Setup 6. The build uses app_icon.ico.
 
 ## Notes
 

@@ -6144,7 +6144,7 @@ sql_selected_days = {
     "Sun": BooleanVar(value=True),
 }
 
-root.iconbitmap(os.path.join(os.path.dirname(__file__), "app_icon_v2.ico"))
+root.iconbitmap(os.path.join(os.path.dirname(__file__), "app_icon.ico"))
 icon_red = create_status_icon(STOPPED_COLOR)            # not running
 icon_blue = create_status_icon(LOCAL_SCHEDULE_COLOR)    # local scheduler
 icon_teal = create_status_icon(CLOUD_SCHEDULE_COLOR)    # cloud scheduler
