@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('app_icon.ico', '.'), ('credentials.json', '.')],
+    datas=[('app_icon_v2.ico', '.'), ('credentials.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -37,5 +37,5 @@ exe = EXE(
     entitlements_file=None,
     version='version_info.txt',
     uac_admin=True,
-    icon=['app_icon.ico'],
+    icon=['app_icon_v2.ico'],
 )

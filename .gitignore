@@ -1,2 +1,15 @@
 credentials.json
 token.json
+.test-data/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+recovery_backup_*/
+test-launch.*.log
+app_settings.json
+workspace.code-workspace
+installer_output/*
+!installer_output/Backup Compressor Setup 3.1.1.exe
+!installer_output/SHA256-3.1.1.txt

@@ -1,0 +1,14 @@
+Backup Compressor 3.1.0
+
+- Refreshed dark-only interface with clearer headings and primary actions.
+- Consistent responsive controls, card spacing, and keyboard button navigation.
+- Persistent backup action bar, duplicate selection prevention, and item removal.
+- Removed Paint.NET session protection and its settings.
+- Scheduled local backups use YYYY-MM folders beneath the selected destination.
+- Destination start timestamps are retained and shown in Schedule.
+- Added isolated --test-mode settings and logs.
+
+Existing settings and schedules are preserved during upgrades.
+Monthly folders are created when scheduled backups run; previous archives are not moved.
+Scheduling requires the app to remain running with the scheduler enabled.
+Manual operations in testing mode still perform real backups and uploads.

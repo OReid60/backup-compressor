@@ -1,0 +1,10 @@
+Backup Compressor 3.1.1
+
+- Cloud Backup is hidden by default.
+- Settings > General includes a persistent Show Cloud Backup tab option.
+- Backup logs are now available under Settings > Logs.
+- Hiding Cloud Backup does not change existing cloud schedules.
+
+Includes the dark interface, responsive layout, Paint.NET removal, and
+scheduled YYYY-MM backup folders introduced in 3.1.0.
+Existing settings and schedules are preserved during upgrades.
